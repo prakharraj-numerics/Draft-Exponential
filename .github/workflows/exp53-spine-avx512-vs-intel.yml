@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
 
+# retrigger: 2026-08-30-b
 jobs:
   benchmark:
     strategy:
