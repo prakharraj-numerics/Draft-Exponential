@@ -58,7 +58,7 @@ jobs:
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
           CC=/opt/intel/oneapi/compiler/latest/bin/icx
-          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" exp53_spine_v128_formula6_direct.c exp53_spine_v128_formula6_dquad.c bench_exp53_spine_vs_intel.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_exp53
+          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" exp53_spine_v128_formula6_dquad.c bench_exp53_spine_vs_intel.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_exp53
           "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" bench_intel_exp_ha_1k_accuracy.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_intel_ha_acc
           mkdir -p /tmp/exp53
           /tmp/bench_exp53 | tee /tmp/exp53/results.txt
@@ -71,4 +71,4 @@ jobs:
           name: exp53-formula6-dquad-${{ matrix.slot }}
           path: /tmp/exp53
           if-no-files-found: ignore
-# retrigger-dquad-2
+# retrigger-dquad-fixed
