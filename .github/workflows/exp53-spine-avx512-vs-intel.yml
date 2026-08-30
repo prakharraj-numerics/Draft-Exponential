@@ -5,7 +5,8 @@ on:
     paths:
       - 'exp53_spine_v128_formula6_compfast.c'
       - 'exp53_spine_v128_formula6_compfastC_frozen.c'
-      - 'bench_exp53_compfastC_classes.c'
+      - 'exp53_spine_v128_formula6_allinfra.c'
+      - 'bench_exp53_allinfra.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
 permissions:
@@ -32,7 +33,7 @@ jobs:
           set -euo pipefail
           sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure*' \) -delete || true
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends build-essential binutils curl gpg-agent wget ca-certificates
+          sudo apt-get install -y --no-install-recommends build-essential binutils curl gpg-agent wget ca-certificates linux-tools-common linux-tools-generic || true
           wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
           echo 'deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main' | sudo tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
           sudo apt-get update -qq
@@ -46,21 +47,24 @@ jobs:
       - name: Install Intel oneAPI on cache miss
         if: steps.gate.outputs.eligible == '1' && steps.oneapicache.outputs.cache-hit != 'true'
         run: sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel intel-oneapi-compiler-dpcpp-cpp
-      - name: Build frozen compfastC class benchmark
+      - name: Build and run ALL infrastructure sweep
         if: steps.gate.outputs.eligible == '1'
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
           CC=/opt/intel/oneapi/compiler/latest/bin/icx
-          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" exp53_spine_v128_formula6_compfastC_frozen.c bench_exp53_compfastC_classes.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_compfastC_classes
           mkdir -p /tmp/exp53
-          /tmp/bench_compfastC_classes | tee /tmp/exp53/results_classes.txt
-          objdump -d -Mintel /tmp/bench_compfastC_classes > /tmp/exp53/assembly.txt
+          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -qopt-report=3 -qopt-report-phase=all -qopt-report-file=/tmp/exp53/icx.optrpt -I"$MKLROOT/include" exp53_spine_v128_formula6_allinfra.c bench_exp53_allinfra.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_allinfra
+          /tmp/bench_allinfra | tee /tmp/exp53/results.txt
+          objdump -d -Mintel /tmp/bench_allinfra > /tmp/exp53/assembly.txt
+          grep -A420 -E '<exp53_(all_pipe_u[2468]|all_regtab_(fast|comp)_u[48])>:' /tmp/exp53/assembly.txt > /tmp/exp53/allinfra_kernels.asm || true
+          { echo '=== PERF ==='; perf stat -e cycles,instructions,branches,branch-misses,cache-references,cache-misses /tmp/bench_allinfra >/dev/null; } 2> /tmp/exp53/perf.txt || true
+          { echo '=== VTUNE DETECT ==='; command -v vtune || true; ls /opt/intel/oneapi/vtune/latest/bin64/vtune 2>/dev/null || true; } > /tmp/exp53/vtune_detect.txt
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-compfastC-classes-${{ matrix.slot }}
+          name: exp53-allinfra-${{ matrix.slot }}
           path: /tmp/exp53
           if-no-files-found: ignore
-# frozen-compfastC-class-timing
+# ALL-infrastructure-sweep
