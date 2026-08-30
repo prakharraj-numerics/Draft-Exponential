@@ -1,0 +1,45 @@
+name: EXP53 n2 directed MPFR certification
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'cert_exp53_n2_mpfr.c'
+      - 'exp53_spine_n2_integralpower.c'
+      - '.github/workflows/exp53-n2-mpfr-cert.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  certify:
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require Xeon 6973P-C AVX-512 host
+        id: gate
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
+      - name: Install MPFR
+        if: steps.gate.outputs.eligible == '1'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential gcc libmpfr-dev libgmp-dev
+      - name: Build and certify
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          mkdir -p /tmp/n2cert
+          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG exp53_spine_n2_integralpower.c cert_exp53_n2_mpfr.c -lmpfr -lgmp -lm -o /tmp/n2cert/cert
+          /tmp/n2cert/cert | tee /tmp/n2cert/results.txt
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.eligible == '1'
+        with:
+          name: exp53-n2-mpfr-${{ matrix.slot }}
+          path: /tmp/n2cert
+          if-no-files-found: ignore
