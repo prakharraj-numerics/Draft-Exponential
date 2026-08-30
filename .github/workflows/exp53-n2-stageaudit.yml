@@ -10,8 +10,21 @@ permissions:
   contents: read
 jobs:
   stageaudit:
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcc libmpfr-dev libgmp-dev
-      - run: gcc -O3 -mavx512f -mavx512dq -mfma -ffp-contract=fast cert_exp53_n2_stageaudit.c -lmpfr -lgmp -lm -o /tmp/stageaudit && /tmp/stageaudit
+      - name: Require Xeon 6973P-C AVX-512 host
+        id: gate
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
+      - if: steps.gate.outputs.eligible == '1'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcc libmpfr-dev libgmp-dev
+      - if: steps.gate.outputs.eligible == '1'
+        run: gcc -O3 -mavx512f -mavx512dq -mfma -ffp-contract=fast cert_exp53_n2_stageaudit.c -lmpfr -lgmp -lm -o /tmp/stageaudit && /tmp/stageaudit
