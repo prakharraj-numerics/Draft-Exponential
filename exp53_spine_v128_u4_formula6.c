@@ -10,7 +10,7 @@
    Then fuse h = 1 + S + C and return h^2.
    Residual core cost: 4 FMA + 2 MUL.
 */
-#include "exp53_spine_v128_frozen.c"
+#include "exp53_spine_v128_u4_frozen.c"
 
 #define F6_A0 0x1.ffffffffffff5p-4
 #define F6_A1 0x1.555556b330444p-9
