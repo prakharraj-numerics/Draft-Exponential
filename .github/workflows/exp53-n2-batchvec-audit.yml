@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - 'exp53_n2_batchvec_audit.c'
+      - 'exp53_n2_elonly.c'
       - 'bench_exp53_n2_batchvec_audit.c'
       - '.github/workflows/exp53-n2-batchvec-audit.yml'
   workflow_dispatch:
@@ -51,7 +52,7 @@ jobs:
           MKLROOT=/opt/intel/oneapi/mkl/latest
           ICX=/opt/intel/oneapi/compiler/latest/bin/icx
           LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
-          SRC='exp53_n2_batchvec_audit.c bench_exp53_n2_batchvec_audit.c'
+          SRC='exp53_n2_batchvec_audit.c exp53_n2_elonly.c bench_exp53_n2_batchvec_audit.c'
           gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/bv_gcc
           echo GCC_BEGIN; /tmp/bv_gcc | tee /tmp/gcc.txt; echo GCC_END
           "$ICX" -O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/bv_icx
