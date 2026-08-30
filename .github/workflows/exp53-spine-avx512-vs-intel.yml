@@ -1,10 +1,10 @@
-name: EXP53 integral-power spine benchmark
+name: EXP53 faithful n2 integral-power benchmark
 on:
   push:
     branches: [ main ]
     paths:
-      - 'exp53_integralpower_spine.c'
-      - 'bench_exp53_integralpower.c'
+      - 'exp53_spine_n2_integralpower.c'
+      - 'bench_exp53_n2_integralpower.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
 permissions:
@@ -31,7 +31,7 @@ jobs:
           set -euo pipefail
           sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure*' \) -delete || true
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends build-essential binutils gcc curl gpg-agent wget ca-certificates libmpfr-dev libgmp-dev || true
+          sudo apt-get install -y --no-install-recommends build-essential binutils gcc curl gpg-agent wget ca-certificates || true
           wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
           echo 'deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main' | sudo tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
           sudo apt-get update -qq
@@ -44,24 +44,37 @@ jobs:
           key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
       - name: Install Intel oneAPI on cache miss
         if: steps.gate.outputs.eligible == '1' && steps.oneapicache.outputs.cache-hit != 'true'
-        run: sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel
-      - name: Build and run integral-power benchmark
+        run: sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel intel-oneapi-compiler-dpcpp-cpp
+      - name: Build and run GCC and ICX n2 matrix
         if: steps.gate.outputs.eligible == '1'
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
-          SRC='exp53_integralpower_spine.c exp53_spine_v128_spinepoly.c bench_exp53_integralpower.c'
-          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lmpfr -lgmp -lpthread -lm -ldl"
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          SRC='exp53_spine_n2_integralpower.c bench_exp53_n2_integralpower.c'
+          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           mkdir -p /tmp/exp53
-          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/bench_ip
-          /tmp/bench_ip | tee /tmp/exp53/results.txt
-          objdump -d -Mintel /tmp/bench_ip > /tmp/exp53/assembly.txt
-          grep -A350 -E '<exp53_ip_n2d(3|4|5)_u(4|5|6)>:' /tmp/exp53/assembly.txt > /tmp/exp53/ip_hot.asm || true
+
+          echo '=== GCC BUILD ==='
+          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/n2_gcc
+          echo '=== GCC RUN ===' | tee /tmp/exp53/gcc.txt
+          /tmp/n2_gcc | tee -a /tmp/exp53/gcc.txt
+          objdump -d -Mintel /tmp/n2_gcc > /tmp/exp53/gcc.asm
+
+          echo '=== ICX BUILD ==='
+          "$ICX" -O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/n2_icx
+          echo '=== ICX RUN ===' | tee /tmp/exp53/icx.txt
+          /tmp/n2_icx | tee -a /tmp/exp53/icx.txt
+          objdump -d -Mintel /tmp/n2_icx > /tmp/exp53/icx.asm
+
+          grep -A260 -E '<exp53_n2_(fast|pc|rc)_u(2|4|6)>:' /tmp/exp53/gcc.asm > /tmp/exp53/n2_hot_gcc.asm || true
+          grep -A260 -E '<exp53_n2_(fast|pc|rc)_u(2|4|6)>:' /tmp/exp53/icx.asm > /tmp/exp53/n2_hot_icx.asm || true
           echo "GCC=$(gcc --version | head -1)" > /tmp/exp53/toolchain.txt
+          echo "ICX=$($ICX --version | head -1)" >> /tmp/exp53/toolchain.txt
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-integralpower-${{ matrix.slot }}
+          name: exp53-n2-integralpower-${{ matrix.slot }}
           path: /tmp/exp53
           if-no-files-found: ignore
