@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <mkl.h>
 #include <mkl_vml.h>
 typedef void(*fn_t)(double*,const double*,size_t);
 void exp53_spine_v16_baseline(double*,const double*,size_t);void exp53_spine_v64_scalef(double*,const double*,size_t);void exp53_spine_v64_bits(double*,const double*,size_t);void exp53_spine_v128_magic_hi(double*,const double*,size_t);void exp53_spine_v128_magic_hilo(double*,const double*,size_t);
