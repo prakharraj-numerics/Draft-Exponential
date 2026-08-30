@@ -70,3 +70,5 @@ jobs:
         with:
           name: exp53-n2-glx-${{ matrix.shard }}
           path: /tmp/glx_all.txt
+
+# fresh allocation trigger 2026-08-31
