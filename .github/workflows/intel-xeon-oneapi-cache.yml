@@ -1,0 +1,54 @@
+name: Intel Xeon oneAPI cache
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/intel-xeon-oneapi-cache.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  cache-oneapi:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host information
+        run: |
+          lscpu | grep -E 'Vendor ID|Model name|CPU\(s\)|L2 cache|L3 cache' || true
+          grep -m1 '^flags' /proc/cpuinfo || true
+
+      - name: Base packages + Intel repository
+        run: |
+          set -euo pipefail
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure*' \) -delete || true
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential binutils libgmp-dev libmpfr-dev python3 curl xz-utils gpg-agent wget ca-certificates
+          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main' | sudo tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
+          sudo apt-get update -qq
+
+      - name: Restore Intel oneAPI cache
+        id: oneapicache
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Install Intel oneAPI on cache miss
+        if: steps.oneapicache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel intel-oneapi-compiler-dpcpp-cpp
+
+      - name: Verify cached Intel Xeon toolchain
+        run: |
+          set -euo pipefail
+          test -x /opt/intel/oneapi/compiler/latest/bin/icx
+          test -d /opt/intel/oneapi/mkl/latest
+          /opt/intel/oneapi/compiler/latest/bin/icx --version
+          echo "MKLROOT=/opt/intel/oneapi/mkl/latest"
+          echo "INTEL_CACHE_HIT=${{ steps.oneapicache.outputs.cache-hit }}"
