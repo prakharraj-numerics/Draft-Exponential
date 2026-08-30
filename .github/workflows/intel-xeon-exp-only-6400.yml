@@ -1,0 +1,73 @@
+name: Intel Xeon EXP only 6400
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'bench_intel_xeon_exp_6400.c'
+      - '.github/workflows/intel-xeon-exp-only-6400.yml'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1,2,3,4,5,6,7,8]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require Intel Xeon AVX-512 host
+        id: gate
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu | grep -E 'Vendor ID|Model name|CPU\(s\)|L2 cache|L3 cache'
+          if [[ "$MODEL" == *"Xeon"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_XEON_OR_NO_AVX512
+          fi
+      - name: Base packages + Intel repo
+        if: steps.gate.outputs.eligible == '1'
+        run: |
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure*' \) -delete || true
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential binutils curl gpg-agent wget ca-certificates
+          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main' | sudo tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
+          sudo apt-get update -qq
+      - name: Restore Intel oneAPI
+        if: steps.gate.outputs.eligible == '1'
+        id: oneapicache
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Install Intel oneAPI on cache miss
+        if: steps.gate.outputs.eligible == '1' && steps.oneapicache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel intel-oneapi-compiler-dpcpp-cpp
+      - name: Build and benchmark Intel only
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          CC=/opt/intel/oneapi/compiler/latest/bin/icx
+          test -x "$CC"
+          test -d "$MKLROOT"
+          "$CC" -O3 -xHost -fp-model=precise -DNDEBUG \
+            -I"$MKLROOT/include" bench_intel_xeon_exp_6400.c \
+            -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed \
+            -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl \
+            -o /tmp/bench_intel_exp
+          mkdir -p /tmp/intel-exp-only
+          /tmp/bench_intel_exp | tee /tmp/intel-exp-only/results.txt
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.eligible == '1'
+        with:
+          name: intel-xeon-exp-only-6400-${{ matrix.slot }}
+          path: /tmp/intel-exp-only/results.txt
+          if-no-files-found: ignore
