@@ -10,7 +10,7 @@
 
 typedef void(*fn_t)(double*,const double*,size_t);
 void exp53_spine_v128_u4_frozen(double*,const double*,size_t);
-void exp53_spine_v128_u4_formula7(double*,const double*,size_t);
+void exp53_spine_v128_u4_formula8(double*,const double*,size_t);
 
 enum{N=6400,HALF=3200,REPS=20000};
 static double x[N],y[N],z[N];
@@ -25,4 +25,4 @@ static void acc(const char*n,fn_t f){f(y,x,N);uint64_t mx=0;int g1=0,g2=0,g4=0;l
 static double bo(fn_t f,int lo,int n){for(int i=0;i<200;i++)f(y+lo,x+lo,n);double a=sec();for(int i=0;i<REPS;i++)f(y+lo,x+lo,n);double b=sec();return(b-a)*1e9/((double)REPS*n);}
 static double bi(int lo,int n){for(int i=0;i<200;i++)vmdExp(n,x+lo,z+lo,VML_HA);double a=sec();for(int i=0;i<REPS;i++)vmdExp(n,x+lo,z+lo,VML_HA);double b=sec();return(b-a)*1e9/((double)REPS*n);}
 static void rep(const char*n,fn_t f,double ia){double s=bo(f,0,HALF),w=bo(f,HALF,HALF),a=bo(f,0,N);printf("RES %-10s small=%.6f wide=%.6f all=%.6f intelHA_over=%.4fx\n",n,s,w,a,ia/a);}
-int main(void){setenv("MKL_NUM_THREADS","1",1);setenv("OMP_NUM_THREADS","1",1);mkl_set_num_threads_local(1);inputs();acc("u4_frozen",exp53_spine_v128_u4_frozen);acc("formula7",exp53_spine_v128_u4_formula7);double ha=bi(0,N);printf("INTEL_HA all=%.6f\n",ha);rep("u4_frozen",exp53_spine_v128_u4_frozen,ha);rep("formula7",exp53_spine_v128_u4_formula7,ha);return 0;}
+int main(void){setenv("MKL_NUM_THREADS","1",1);setenv("OMP_NUM_THREADS","1",1);mkl_set_num_threads_local(1);inputs();acc("u4_frozen",exp53_spine_v128_u4_frozen);acc("formula8",exp53_spine_v128_u4_formula8);double ha=bi(0,N);printf("INTEL_HA all=%.6f\n",ha);rep("u4_frozen",exp53_spine_v128_u4_frozen,ha);rep("formula8",exp53_spine_v128_u4_formula8,ha);return 0;}
