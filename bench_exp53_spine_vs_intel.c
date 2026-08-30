@@ -7,12 +7,12 @@
 #include <time.h>
 #include <mkl.h>
 #include <mkl_vml.h>
-/* Xeon diagnostic retrigger 2 */
 
 typedef void(*fn_t)(double*,const double*,size_t);
 void exp53_spine_v128_u4_frozen(double*,const double*,size_t);
 void exp53_spine_v128_u4_formula6(double*,const double*,size_t);
 void exp53_spine_v128_formula6_direct(double*,const double*,size_t);
+void exp53_spine_v128_formula6_dquad(double*,const double*,size_t);
 
 enum{N=6400,HALF=3200,REPS=20000};
 static double x[N],y[N],z[N];
@@ -24,22 +24,7 @@ static uint64_t sm(uint64_t*s){uint64_t v=(*s+=0x9e3779b97f4a7c15ULL);v=(v^(v>>3
 static double uni(uint64_t*s){return(sm(s)>>11)*0x1p-53;}
 static void inputs(void){uint64_t s=0x6a09e667f3bcc909ULL;for(int i=0;i<1600;i++)x[i]=0x1p-20+uni(&s)*(1-0x1p-20);for(int i=1600;i<3200;i++)x[i]=-(0x1p-20+uni(&s)*(1-0x1p-20));for(int i=3200;i<4800;i++)x[i]=1+uni(&s)*99;for(int i=4800;i<6400;i++)x[i]=-(1+uni(&s)*99);}
 static void acc(const char*n,fn_t f){f(y,x,N);uint64_t mx=0;int g1=0,g2=0,g3=0,g4=0;long double mr=0;for(int i=0;i<N;i++){double r=exp(x[i]);uint64_t d=D(y[i],r);if(d>mx)mx=d;if(d>1)g1++;if(d>2)g2++;if(d>3)g3++;if(d>4)g4++;long double e=fabsl(((long double)y[i]-r)/r);if(e>mr)mr=e;}printf("ACC %-12s maxulp=%llu gt1=%d gt2=%d gt3=%d gt4=%d maxrel=%.3Le\n",n,(unsigned long long)mx,g1,g2,g3,g4,mr);}
-static void diag_direct(void){
-  static int cnt[128],up[128],dn[128];
-  const double INV128=0x1.71547652b82fep+7,LH=0x1.62e42fefa39efp-8,LM=0x1.abc9e3b39803fp-63,LL=0x1.7b57a079a1934p-118;
-  exp53_spine_v128_formula6_direct(y,x,N);
-  int total=0;
-  for(int i=0;i<N;i++){
-    double ref=exp(x[i]); uint64_t d=D(y[i],ref); if(d<=1) continue;
-    long long k=llrint(x[i]*INV128); int j=(int)(k&127LL);
-    double r=fma(-(double)k,LH,x[i]); r=fma(-(double)k,LM,r); r=fma(-(double)k,LL,r);
-    cnt[j]++; if(y[i]>ref)up[j]++; else dn[j]++; total++;
-    if(total<=40) printf("D2 i=%d j=%d k=%lld r=%a dir=%c x=%a got=%a ref=%a ulp=%llu\n",i,j,k,r,y[i]>ref?'+':'-',x[i],y[i],ref,(unsigned long long)d);
-  }
-  printf("D2_TOTAL %d\n",total);
-  for(int j=0;j<128;j++) if(cnt[j]) printf("D2J j=%d n=%d up=%d down=%d\n",j,cnt[j],up[j],dn[j]);
-}
 static double bo(fn_t f,int lo,int n){for(int i=0;i<200;i++)f(y+lo,x+lo,n);double a=sec();for(int i=0;i<REPS;i++)f(y+lo,x+lo,n);double b=sec();return(b-a)*1e9/((double)REPS*n);}
 static double bi(int lo,int n){for(int i=0;i<200;i++)vmdExp(n,x+lo,z+lo,VML_HA);double a=sec();for(int i=0;i<REPS;i++)vmdExp(n,x+lo,z+lo,VML_HA);double b=sec();return(b-a)*1e9/((double)REPS*n);}
 static void rep(const char*n,fn_t f,double ia){double s=bo(f,0,HALF),w=bo(f,HALF,HALF),a=bo(f,0,N);printf("RES %-12s small=%.6f wide=%.6f all=%.6f intelHA_over=%.4fx\n",n,s,w,a,ia/a);}
-int main(void){setenv("MKL_NUM_THREADS","1",1);setenv("OMP_NUM_THREADS","1",1);mkl_set_num_threads_local(1);inputs();acc("u4_frozen",exp53_spine_v128_u4_frozen);acc("formula6",exp53_spine_v128_u4_formula6);acc("f6_direct",exp53_spine_v128_formula6_direct);diag_direct();double ha=bi(0,N);printf("INTEL_HA all=%.6f\n",ha);rep("u4_frozen",exp53_spine_v128_u4_frozen,ha);rep("formula6",exp53_spine_v128_u4_formula6,ha);rep("f6_direct",exp53_spine_v128_formula6_direct,ha);return 0;}
+int main(void){setenv("MKL_NUM_THREADS","1",1);setenv("OMP_NUM_THREADS","1",1);mkl_set_num_threads_local(1);inputs();acc("u4_frozen",exp53_spine_v128_u4_frozen);acc("formula6",exp53_spine_v128_u4_formula6);acc("f6_direct",exp53_spine_v128_formula6_direct);acc("f6_dquad",exp53_spine_v128_formula6_dquad);double ha=bi(0,N);printf("INTEL_HA all=%.6f\n",ha);rep("u4_frozen",exp53_spine_v128_u4_frozen,ha);rep("formula6",exp53_spine_v128_u4_formula6,ha);rep("f6_direct",exp53_spine_v128_formula6_direct,ha);rep("f6_dquad",exp53_spine_v128_formula6_dquad,ha);return 0;}
