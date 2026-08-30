@@ -7,6 +7,7 @@
 #include <time.h>
 #include <mkl.h>
 #include <mkl_vml.h>
+/* Xeon diagnostic retrigger 2 */
 
 typedef void(*fn_t)(double*,const double*,size_t);
 void exp53_spine_v128_u4_frozen(double*,const double*,size_t);
