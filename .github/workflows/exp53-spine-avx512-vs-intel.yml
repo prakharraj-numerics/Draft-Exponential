@@ -3,7 +3,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'exp53_spine_avx512_prototype.c'
+      - 'exp53_spine_v128_frozen.c'
       - 'bench_exp53_spine_vs_intel.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
@@ -11,7 +11,6 @@ on:
 permissions:
   contents: read
 
-# retrigger: 2026-08-30-b
 jobs:
   benchmark:
     strategy:
@@ -61,7 +60,7 @@ jobs:
           MKLROOT=/opt/intel/oneapi/mkl/latest
           CC=/opt/intel/oneapi/compiler/latest/bin/icx
           "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG \
-            -I"$MKLROOT/include" exp53_spine_avx512_prototype.c bench_exp53_spine_vs_intel.c \
+            -I"$MKLROOT/include" exp53_spine_v128_frozen.c bench_exp53_spine_vs_intel.c \
             -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed \
             -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl \
             -o /tmp/bench_exp53
@@ -70,6 +69,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-spine-avx512-${{ matrix.slot }}
+          name: exp53-v128-frozen-${{ matrix.slot }}
           path: /tmp/exp53/results.txt
           if-no-files-found: ignore
