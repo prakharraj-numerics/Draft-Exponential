@@ -3,8 +3,8 @@ on:
   push:
     branches: [ main ]
     paths:
+      - 'diag_exp53_spinepoly.c'
       - 'exp53_spine_v128_spinepoly.c'
-      - 'bench_exp53_spinepoly.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
 permissions:
@@ -25,44 +25,25 @@ jobs:
           MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
           echo "CPU_MODEL=$MODEL"
           if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
-      - name: Base packages + Intel repo
+      - name: Base packages
         if: steps.gate.outputs.eligible == '1'
         run: |
           set -euo pipefail
-          sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure*' \) -delete || true
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends build-essential binutils gcc curl gpg-agent wget ca-certificates || true
-          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
-          echo 'deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main' | sudo tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
-          sudo apt-get update -qq
-      - name: Restore Intel oneAPI
-        if: steps.gate.outputs.eligible == '1'
-        id: oneapicache
-        uses: actions/cache@v4
-        with:
-          path: /opt/intel/oneapi
-          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
-      - name: Install Intel oneAPI on cache miss
-        if: steps.gate.outputs.eligible == '1' && steps.oneapicache.outputs.cache-hit != 'true'
-        run: sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel intel-oneapi-compiler-dpcpp-cpp
-      - name: Build and run C-spine polynomial benchmark
+          sudo apt-get install -y --no-install-recommends build-essential gcc binutils
+      - name: Build and run C-spine ULP diagnostic
         if: steps.gate.outputs.eligible == '1'
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
           set -euo pipefail
-          MKLROOT=/opt/intel/oneapi/mkl/latest
-          SRC='exp53_spine_v128_spinepoly.c bench_exp53_spinepoly.c'
-          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           mkdir -p /tmp/exp53
-          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/bench_spinepoly
-          /tmp/bench_spinepoly | tee /tmp/exp53/results.txt
-          objdump -d -Mintel /tmp/bench_spinepoly > /tmp/exp53/assembly.txt
-          grep -A420 -E '<exp53_spinepoly_(mid_u[456]|plain_u6)>:' /tmp/exp53/assembly.txt > /tmp/exp53/spinepoly_hot.asm || true
-          echo "GCC=$(gcc --version | head -1)" > /tmp/exp53/toolchain.txt
+          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG diag_exp53_spinepoly.c -lm -o /tmp/diag_spinepoly
+          /tmp/diag_spinepoly | tee /tmp/exp53/diag.txt
+          objdump -d -Mintel /tmp/diag_spinepoly > /tmp/exp53/diag.asm
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-spinepoly-${{ matrix.slot }}
+          name: exp53-spinepoly-diag-${{ matrix.slot }}
           path: /tmp/exp53
           if-no-files-found: ignore
-# C-spine-polynomial-64
+# C-spine-polynomial-diagnostic
