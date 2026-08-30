@@ -9,6 +9,7 @@ on:
       - 'exp53_spine_v128_u4_formula6_tabcomp.c'
       - 'exp53_spine_v128_formula6_direct.c'
       - 'bench_exp53_spine_vs_intel.c'
+      - 'bench_intel_exp_ha_1k_accuracy.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
 permissions:
@@ -57,8 +58,10 @@ jobs:
           MKLROOT=/opt/intel/oneapi/mkl/latest
           CC=/opt/intel/oneapi/compiler/latest/bin/icx
           "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" exp53_spine_v128_formula6_direct.c bench_exp53_spine_vs_intel.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_exp53
+          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" bench_intel_exp_ha_1k_accuracy.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_intel_ha_acc
           mkdir -p /tmp/exp53
           /tmp/bench_exp53 | tee /tmp/exp53/results.txt
+          /tmp/bench_intel_ha_acc | tee /tmp/exp53/intel_ha_1k_accuracy.txt
           objdump -d -Mintel /tmp/bench_exp53 > /tmp/exp53/assembly.txt
           grep -A120 -E '<exp53_spine_v128_(u4_formula6(_tabcomp)?|formula6_direct)>:' /tmp/exp53/assembly.txt > /tmp/exp53/kernels.asm || true
       - uses: actions/upload-artifact@v4
