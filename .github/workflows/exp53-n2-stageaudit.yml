@@ -1,0 +1,17 @@
+name: EXP53 n2 MPFR stage audit
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'cert_exp53_n2_stageaudit.c'
+      - '.github/workflows/exp53-n2-stageaudit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stageaudit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcc libmpfr-dev libgmp-dev
+      - run: gcc -O3 -march=native -ffp-contract=fast cert_exp53_n2_stageaudit.c -lmpfr -lgmp -lm -o /tmp/stageaudit && /tmp/stageaudit
