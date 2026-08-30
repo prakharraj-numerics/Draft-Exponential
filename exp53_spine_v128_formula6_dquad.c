@@ -2,9 +2,10 @@
    Preserve v128 reduction and degree-1 C/S approximations, but reconstruct via
       d = C + S
       exp(r) = (1+d)^2 = 1 + 2*d + d*d
-   This avoids rounding h=1+C+S before squaring while keeping the core compact.
+   This translation unit includes the existing direct candidate so all shared
+   v128/Formula6 symbols are emitted exactly once when benchmarking both.
 */
-#include "exp53_spine_v128_u4_formula6.c"
+#include "exp53_spine_v128_formula6_direct.c"
 
 static inline __m512d spine_residual128_formula6_dquad(__m512d r)
 {
