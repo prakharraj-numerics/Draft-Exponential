@@ -1,3 +1,4 @@
+/* retrigger Xeon microarchitecture audit; harness logic unchanged */
 #include <mkl.h>
 #include <mkl_vml.h>
 #include <math.h>
