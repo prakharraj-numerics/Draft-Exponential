@@ -3,8 +3,8 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'exp53_spine_v128_formula6_finalinfra.c'
-      - 'bench_exp53_finalinfra.c'
+      - 'exp53_spine_v128_spinepoly.c'
+      - 'bench_exp53_spinepoly.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
 permissions:
@@ -45,41 +45,24 @@ jobs:
       - name: Install Intel oneAPI on cache miss
         if: steps.gate.outputs.eligible == '1' && steps.oneapicache.outputs.cache-hit != 'true'
         run: sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel intel-oneapi-compiler-dpcpp-cpp
-      - name: Build and run final infrastructure matrix
+      - name: Build and run C-spine polynomial benchmark
         if: steps.gate.outputs.eligible == '1'
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
-          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
-          SRC='exp53_spine_v128_formula6_finalinfra.c bench_exp53_finalinfra.c'
+          SRC='exp53_spine_v128_spinepoly.c bench_exp53_spinepoly.c'
           LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           mkdir -p /tmp/exp53
-
-          buildrun(){
-            name="$1"; shift
-            echo "=== BUILD $name ==="
-            "$ICX" "$@" -I"$MKLROOT/include" $SRC $LINK -o "/tmp/$name"
-            echo "=== RUN $name ===" | tee "/tmp/exp53/$name.txt"
-            "/tmp/$name" | tee -a "/tmp/exp53/$name.txt"
-            objdump -d -Mintel "/tmp/$name" > "/tmp/exp53/$name.asm"
-          }
-
-          buildrun final_default -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -qopt-report=3 -qopt-report-file=/tmp/exp53/default.optrpt
-          buildrun final_zmmhigh -O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopt-report=3 -qopt-report-file=/tmp/exp53/zmmhigh.optrpt
-          buildrun final_ipo -O3 -xHost -qopt-zmm-usage=high -ipo -fp-model=precise -fno-math-errno -DNDEBUG
-
-          echo '=== GCC BUILD ==='
-          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/final_gcc || true
-          if [[ -x /tmp/final_gcc ]]; then echo '=== RUN final_gcc ===' | tee /tmp/exp53/final_gcc.txt; /tmp/final_gcc | tee -a /tmp/exp53/final_gcc.txt; objdump -d -Mintel /tmp/final_gcc > /tmp/exp53/final_gcc.asm; fi
-
-          grep -A520 -E '<exp53_final_(early|mid|split)_u[456]>:' /tmp/exp53/final_default.asm > /tmp/exp53/final_hot.asm || true
-          echo "ICX=$($ICX --version | head -1)" > /tmp/exp53/toolchain.txt
-          echo "GCC=$(gcc --version | head -1)" >> /tmp/exp53/toolchain.txt
+          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/bench_spinepoly
+          /tmp/bench_spinepoly | tee /tmp/exp53/results.txt
+          objdump -d -Mintel /tmp/bench_spinepoly > /tmp/exp53/assembly.txt
+          grep -A420 -E '<exp53_spinepoly_(mid_u[456]|plain_u6)>:' /tmp/exp53/assembly.txt > /tmp/exp53/spinepoly_hot.asm || true
+          echo "GCC=$(gcc --version | head -1)" > /tmp/exp53/toolchain.txt
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-finalinfra-${{ matrix.slot }}
+          name: exp53-spinepoly-${{ matrix.slot }}
           path: /tmp/exp53
           if-no-files-found: ignore
-# final-infrastructure-assault
+# C-spine-polynomial
