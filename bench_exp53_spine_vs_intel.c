@@ -6,60 +6,13 @@
 #include <string.h>
 #include <time.h>
 #include <mkl_vml.h>
-
-void exp53_spine_avx512_batch(double *restrict out,const double *restrict in,size_t n);
-
-enum { N=6400, HALF=3200, REPS=20000 };
-static double x[N], y[N], z[N];
-
-static inline uint64_t u64(double a){uint64_t u;memcpy(&u,&a,8);return u;}
-static inline uint64_t ord(double a){uint64_t u=u64(a);return (u>>63)?~u:(u|0x8000000000000000ULL);}
-static inline uint64_t ulpd(double a,double b){uint64_t A=ord(a),B=ord(b);return A>B?A-B:B-A;}
-static inline double sec(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC_RAW,&t);return (double)t.tv_sec+1e-9*(double)t.tv_nsec;}
-
-static uint64_t sm64(uint64_t *s){uint64_t z=(*s+=0x9e3779b97f4a7c15ULL);z=(z^(z>>30))*0xbf58476d1ce4e5b9ULL;z=(z^(z>>27))*0x94d049bb133111ebULL;return z^(z>>31);}
-static double uni(uint64_t *s){return (sm64(s)>>11)*0x1.0p-53;}
-static void make_inputs(void){
-  uint64_t s=0x6a09e667f3bcc909ULL;
-  for(int i=0;i<1600;i++) x[i]=0x1.0p-20 + uni(&s)*(1.0-0x1.0p-20);
-  for(int i=1600;i<3200;i++) x[i]=-(0x1.0p-20 + uni(&s)*(1.0-0x1.0p-20));
-  for(int i=3200;i<4800;i++) x[i]=1.0 + uni(&s)*99.0;
-  for(int i=4800;i<6400;i++) x[i]=-(1.0 + uni(&s)*99.0);
-}
-
-static void check(void){
-  exp53_spine_avx512_batch(y,x,N);
-  uint64_t maxulp=0; long double maxrel=0.0L; int gt1=0,gt2=0,gt4=0;
-  for(int i=0;i<N;i++){
-    double r=exp(x[i]); z[i]=r; uint64_t d=ulpd(y[i],r); if(d>maxulp)maxulp=d;
-    if(d>1)gt1++; if(d>2)gt2++; if(d>4)gt4++;
-    long double rel=fabsl(((long double)y[i]-(long double)r)/(long double)r); if(rel>maxrel)maxrel=rel;
-  }
-  printf("ACCURACY max_ulp_vs_libm=%llu gt1=%d gt2=%d gt4=%d max_rel=%.3Le\n",(unsigned long long)maxulp,gt1,gt2,gt4,maxrel);
-}
-
-static double bench_ours(int lo,int n){
-  for(int w=0;w<200;w++)exp53_spine_avx512_batch(y+lo,x+lo,n);
-  double t0=sec();
-  for(int r=0;r<REPS;r++)exp53_spine_avx512_batch(y+lo,x+lo,n);
-  double t1=sec();
-  return (t1-t0)*1e9/((double)REPS*n);
-}
-static double bench_intel(int lo,int n){
-  for(int w=0;w<200;w++)vmdExp(n,x+lo,z+lo,VML_HA);
-  double t0=sec();
-  for(int r=0;r<REPS;r++)vmdExp(n,x+lo,z+lo,VML_HA);
-  double t1=sec();
-  return (t1-t0)*1e9/((double)REPS*n);
-}
-int main(void){
-  setenv("MKL_NUM_THREADS","1",1);setenv("OMP_NUM_THREADS","1",1);
-  make_inputs();check();
-  double os=bench_ours(0,HALF), ow=bench_ours(HALF,HALF), oa=bench_ours(0,N);
-  double is=bench_intel(0,HALF), iw=bench_intel(HALF,HALF), ia=bench_intel(0,N);
-  printf("EXP53_SPINE_SMALL ours_ns=%.6f intel_ns=%.6f intel_over_ours=%.4fx\n",os,is,is/os);
-  printf("EXP53_SPINE_WIDE ours_ns=%.6f intel_ns=%.6f intel_over_ours=%.4fx\n",ow,iw,iw/ow);
-  printf("EXP53_SPINE_ALL ours_ns=%.6f intel_ns=%.6f intel_over_ours=%.4fx\n",oa,ia,ia/oa);
-  volatile double sink=y[7]+z[11]; (void)sink;
-  return 0;
-}
+typedef void(*fn_t)(double*,const double*,size_t);
+void exp53_spine_v16_baseline(double*,const double*,size_t);void exp53_spine_v64_scalef(double*,const double*,size_t);void exp53_spine_v64_bits(double*,const double*,size_t);void exp53_spine_v128_magic_hi(double*,const double*,size_t);void exp53_spine_v128_magic_hilo(double*,const double*,size_t);
+enum{N=6400,HALF=3200,REPS=20000};static double x[N],y[N],z[N];
+static inline uint64_t U(double a){uint64_t u;memcpy(&u,&a,8);return u;}static inline uint64_t O(double a){uint64_t u=U(a);return(u>>63)?~u:(u|0x8000000000000000ULL);}static inline uint64_t D(double a,double b){uint64_t A=O(a),B=O(b);return A>B?A-B:B-A;}static inline double sec(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC_RAW,&t);return(double)t.tv_sec+1e-9*t.tv_nsec;}
+static uint64_t sm(uint64_t*s){uint64_t v=(*s+=0x9e3779b97f4a7c15ULL);v=(v^(v>>30))*0xbf58476d1ce4e5b9ULL;v=(v^(v>>27))*0x94d049bb133111ebULL;return v^(v>>31);}static double uni(uint64_t*s){return(sm(s)>>11)*0x1p-53;}
+static void inputs(void){uint64_t s=0x6a09e667f3bcc909ULL;for(int i=0;i<1600;i++)x[i]=0x1p-20+uni(&s)*(1-0x1p-20);for(int i=1600;i<3200;i++)x[i]=-(0x1p-20+uni(&s)*(1-0x1p-20));for(int i=3200;i<4800;i++)x[i]=1+uni(&s)*99;for(int i=4800;i<6400;i++)x[i]=-(1+uni(&s)*99);}
+static void acc(const char*n,fn_t f){f(y,x,N);uint64_t mx=0;int g1=0,g2=0,g4=0;long double mr=0;for(int i=0;i<N;i++){double r=exp(x[i]);uint64_t d=D(y[i],r);if(d>mx)mx=d;if(d>1)g1++;if(d>2)g2++;if(d>4)g4++;long double e=fabsl(((long double)y[i]-r)/r);if(e>mr)mr=e;}printf("ACC %-20s maxulp=%llu gt1=%d gt2=%d gt4=%d maxrel=%.3Le\n",n,(unsigned long long)mx,g1,g2,g4,mr);}
+static double bo(fn_t f,int lo,int n){for(int i=0;i<200;i++)f(y+lo,x+lo,n);double a=sec();for(int i=0;i<REPS;i++)f(y+lo,x+lo,n);double b=sec();return(b-a)*1e9/((double)REPS*n);}static double bi(int lo,int n){for(int i=0;i<200;i++)vmdExp(n,x+lo,z+lo,VML_HA);double a=sec();for(int i=0;i<REPS;i++)vmdExp(n,x+lo,z+lo,VML_HA);double b=sec();return(b-a)*1e9/((double)REPS*n);}
+static void rep(const char*n,fn_t f,double ia){double s=bo(f,0,HALF),w=bo(f,HALF,HALF),a=bo(f,0,N);printf("RES %-20s small=%.6f wide=%.6f all=%.6f intel_over_all=%.4fx\n",n,s,w,a,ia/a);}
+int main(void){setenv("MKL_NUM_THREADS","1",1);setenv("OMP_NUM_THREADS","1",1);mkl_set_num_threads_local(1);inputs();acc("v16_baseline",exp53_spine_v16_baseline);acc("v64_scalef",exp53_spine_v64_scalef);acc("v64_bits",exp53_spine_v64_bits);acc("v128_magic_hi",exp53_spine_v128_magic_hi);acc("v128_magic_hilo",exp53_spine_v128_magic_hilo);double is=bi(0,HALF),iw=bi(HALF,HALF),ia=bi(0,N);printf("INTEL small=%.6f wide=%.6f all=%.6f\n",is,iw,ia);rep("v16_baseline",exp53_spine_v16_baseline,ia);rep("v64_scalef",exp53_spine_v64_scalef,ia);rep("v64_bits",exp53_spine_v64_bits,ia);rep("v128_magic_hi",exp53_spine_v128_magic_hi,ia);rep("v128_magic_hilo",exp53_spine_v128_magic_hilo,ia);return 0;}
