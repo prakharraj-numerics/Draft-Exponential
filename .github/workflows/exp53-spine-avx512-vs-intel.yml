@@ -1,16 +1,16 @@
-name: EXP53 spine MPFR certification
+name: EXP53 integral-power spine benchmark
 on:
   push:
     branches: [ main ]
     paths:
-      - 'cert_exp53_spinepoly_mpfr.c'
-      - 'exp53_spine_v128_spinepoly.c'
+      - 'exp53_integralpower_spine.c'
+      - 'bench_exp53_integralpower.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  certify:
+  benchmark:
     strategy:
       fail-fast: false
       matrix:
@@ -25,23 +25,43 @@ jobs:
           MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
           echo "CPU_MODEL=$MODEL"
           if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
-      - name: Install MPFR toolchain
+      - name: Base packages + Intel repo
         if: steps.gate.outputs.eligible == '1'
         run: |
           set -euo pipefail
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure*' \) -delete || true
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends build-essential gcc libmpfr-dev libgmp-dev
-      - name: Build and run directed-MPFR certification
+          sudo apt-get install -y --no-install-recommends build-essential binutils gcc curl gpg-agent wget ca-certificates libmpfr-dev libgmp-dev || true
+          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main' | sudo tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
+          sudo apt-get update -qq
+      - name: Restore Intel oneAPI
+        if: steps.gate.outputs.eligible == '1'
+        id: oneapicache
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Install Intel oneAPI on cache miss
+        if: steps.gate.outputs.eligible == '1' && steps.oneapicache.outputs.cache-hit != 'true'
+        run: sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel
+      - name: Build and run integral-power benchmark
         if: steps.gate.outputs.eligible == '1'
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
           set -euo pipefail
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          SRC='exp53_integralpower_spine.c exp53_spine_v128_spinepoly.c bench_exp53_integralpower.c'
+          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lmpfr -lgmp -lpthread -lm -ldl"
           mkdir -p /tmp/exp53
-          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG cert_exp53_spinepoly_mpfr.c -lmpfr -lgmp -lm -o /tmp/cert_spinepoly
-          /tmp/cert_spinepoly | tee /tmp/exp53/mpfr_cert.txt
+          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/bench_ip
+          /tmp/bench_ip | tee /tmp/exp53/results.txt
+          objdump -d -Mintel /tmp/bench_ip > /tmp/exp53/assembly.txt
+          grep -A350 -E '<exp53_ip_n2d(3|4|5)_u(4|5|6)>:' /tmp/exp53/assembly.txt > /tmp/exp53/ip_hot.asm || true
+          echo "GCC=$(gcc --version | head -1)" > /tmp/exp53/toolchain.txt
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-spinepoly-mpfr-${{ matrix.slot }}
+          name: exp53-integralpower-${{ matrix.slot }}
           path: /tmp/exp53
           if-no-files-found: ignore
