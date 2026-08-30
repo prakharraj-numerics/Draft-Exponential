@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
           CC=/opt/intel/oneapi/compiler/latest/bin/icx
-          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" exp53_spine_v128_u4_formula6_tabcomp.c exp53_spine_v128_formula6_direct.c bench_exp53_spine_vs_intel.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_exp53
+          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" exp53_spine_v128_formula6_direct.c bench_exp53_spine_vs_intel.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_exp53
           mkdir -p /tmp/exp53
           /tmp/bench_exp53 | tee /tmp/exp53/results.txt
           objdump -d -Mintel /tmp/bench_exp53 > /tmp/exp53/assembly.txt
