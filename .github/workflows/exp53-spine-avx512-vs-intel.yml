@@ -4,13 +4,12 @@ on:
     branches: [ main ]
     paths:
       - 'exp53_spine_v128_frozen.c'
+      - 'exp53_spine_v128_sweep.c'
       - 'bench_exp53_spine_vs_intel.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   benchmark:
     strategy:
@@ -26,12 +25,7 @@ jobs:
         run: |
           MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
           echo "CPU_MODEL=$MODEL"
-          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
-            echo eligible=1 >> "$GITHUB_OUTPUT"
-          else
-            echo eligible=0 >> "$GITHUB_OUTPUT"
-            echo SKIP_NON_6973PC
-          fi
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
       - name: Base packages + Intel repo
         if: steps.gate.outputs.eligible == '1'
         run: |
@@ -52,23 +46,21 @@ jobs:
       - name: Install Intel oneAPI on cache miss
         if: steps.gate.outputs.eligible == '1' && steps.oneapicache.outputs.cache-hit != 'true'
         run: sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel intel-oneapi-compiler-dpcpp-cpp
-      - name: Build and benchmark
+      - name: Build benchmark and assembly
         if: steps.gate.outputs.eligible == '1'
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
           CC=/opt/intel/oneapi/compiler/latest/bin/icx
-          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG \
-            -I"$MKLROOT/include" exp53_spine_v128_frozen.c bench_exp53_spine_vs_intel.c \
-            -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed \
-            -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl \
-            -o /tmp/bench_exp53
+          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" exp53_spine_v128_sweep.c bench_exp53_spine_vs_intel.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_exp53
           mkdir -p /tmp/exp53
           /tmp/bench_exp53 | tee /tmp/exp53/results.txt
+          objdump -d -Mintel /tmp/bench_exp53 > /tmp/exp53/assembly.txt
+          grep -A100 -E '<exp53_spine_v128_(frozen|u2|u4|decomp|avx2)>:' /tmp/exp53/assembly.txt > /tmp/exp53/kernels.asm || true
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-v128-frozen-${{ matrix.slot }}
-          path: /tmp/exp53/results.txt
+          name: exp53-v128-sweep-${{ matrix.slot }}
+          path: /tmp/exp53
           if-no-files-found: ignore
