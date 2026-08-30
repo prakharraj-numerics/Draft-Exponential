@@ -2,9 +2,10 @@
    Same v128 reduction and same degree-1 C/S approximations as Formula6.
    Reconstruct exp(r) from the identical spine without h^2:
       e^r = (1+C+S)^2 = 1 + 2*S + 2*C*(2+C+S)
-   Include the compensated Formula6 TU so the benchmark links as one implementation unit.
+   IMPORTANT: use the canonical Formula6 v128 table, not the table compensation
+   tuned for the old h^2 reconstruction graph.
 */
-#include "exp53_spine_v128_u4_formula6_tabcomp.c"
+#include "exp53_spine_v128_u4_formula6.c"
 
 static inline __m512d spine_residual128_formula6_direct(__m512d r)
 {
