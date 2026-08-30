@@ -25,14 +25,10 @@
 
 #define BV_CONSTS const __m512d inv=_mm512_set1_pd(INV128),hi=_mm512_set1_pd(L128_HI),mi=_mm512_set1_pd(L128_MI),lo=_mm512_set1_pd(L128_LO),magic=_mm512_set1_pd(MAGIC),one=_mm512_set1_pd(1.0),nq1=_mm512_set1_pd(N2_Q1),nq2=_mm512_set1_pd(N2_Q2),nq3=_mm512_set1_pd(N2_Q3),nq4=_mm512_set1_pd(N2_Q4); const __m512i mb=_mm512_set1_epi64((long long)MAGIC_BITS),mask=_mm512_set1_epi64(127);
 
-/* Current strategy: gather immediately after k, then overlap with reduction/Horner. */
 #define BV_EARLY(F) F(BV_LOAD) F(BV_BIAS) F(BV_K) F(BV_TAB) F(BV_R) F(BV_H1) F(BV_H2) F(BV_H3) F(BV_H4) F(BV_REC) F(BV_MUL) F(BV_STORE)
-/* Mid strategy: reduce first, gather before Horner. */
 #define BV_MID(F) F(BV_LOAD) F(BV_BIAS) F(BV_K) F(BV_R) F(BV_TAB) F(BV_H1) F(BV_H2) F(BV_H3) F(BV_H4) F(BV_REC) F(BV_MUL) F(BV_STORE)
-/* Late strategy: push gather until after Horner, testing latency overlap tradeoff. */
 #define BV_LATE(F) F(BV_LOAD) F(BV_BIAS) F(BV_K) F(BV_R) F(BV_H1) F(BV_H2) F(BV_H3) F(BV_H4) F(BV_TAB) F(BV_REC) F(BV_MUL) F(BV_STORE)
 
-/* Same ER-low math for a single masked vector. This replaces the old RC fallback. */
 static __attribute__((target("avx512f,avx512dq,fma"),always_inline)) inline
 void bv_el_tail(double *restrict out,const double *restrict in,size_t n)
 {
@@ -61,11 +57,10 @@ DEF_BV(exp53_n2_bv_u6,6,BV_F6,BV_EARLY)
 DEF_BV(exp53_n2_bv_mid_u4,4,BV_F4,BV_MID)
 DEF_BV(exp53_n2_bv_late_u4,4,BV_F4,BV_LATE)
 
-/* Batch-adaptive wrapper: exact same vector kernel, just avoid over-unroll for short calls. */
 __attribute__((target("avx512f,avx512dq,fma"),noinline))
 void exp53_n2_bv_adaptive(double*restrict out,const double*restrict in,size_t n){
-    if(n<16) return exp53_n2_bv_u1(out,in,n);
-    if(n<24) return exp53_n2_bv_u2(out,in,n);
-    if(n<32) return exp53_n2_bv_u3(out,in,n);
-    return exp53_n2_bv_u4(out,in,n);
+    if(n<16){exp53_n2_bv_u1(out,in,n);return;}
+    if(n<24){exp53_n2_bv_u2(out,in,n);return;}
+    if(n<32){exp53_n2_bv_u3(out,in,n);return;}
+    exp53_n2_bv_u4(out,in,n);
 }
