@@ -1,6 +1,6 @@
 /* Formula6 tuning sweep. Same outer architecture and same 4-FMA + 2-MUL residual DAG cost.
    Variants differ only in coefficient choice and whether C or S is fused into 1 first. */
-#include "exp53_spine_v128_u4_frozen.c"
+#include "exp53_spine_v128_u4_formula6.c"
 
 #define A0M 0x1.ffffffffffff5p-4
 #define A1M 0x1.555556b330444p-9
@@ -35,11 +35,7 @@ __attribute__((target("avx512f,avx512dq,fma"))) void NAME(double *restrict out,c
  _mm512_storeu_pd(out+i,y0);_mm512_storeu_pd(out+i+8,y1);_mm512_storeu_pd(out+i+16,y2);_mm512_storeu_pd(out+i+24,y3);} \
  for(;i<n;){if(n-i>=8){_mm512_storeu_pd(out+i,NAME##_block(_mm512_loadu_pd(in+i),inv,hi,mi,lo,magic,mb,mask));i+=8;}else{for(;i<n;++i)out[i]=exp(in[i]);}} }
 
-/* Base formula6 coefficients, only rounding order flipped. */
 DEF(exp53_spine_v128_u4_f6_cfirst,A0M,A1M,B0M,B1M,1)
-/* C-first with exact Taylor intercepts but minimax slopes. */
 DEF(exp53_spine_v128_u4_f6_cfirst_i,A0T,A1M,B0T,B1M,1)
-/* C-first with plain degree-1 Taylor coefficients. */
 DEF(exp53_spine_v128_u4_f6_cfirst_t,A0T,A1T,B0T,B1T,1)
-/* S-first plain Taylor control. */
 DEF(exp53_spine_v128_u4_f6_sfirst_t,A0T,A1T,B0T,B1T,0)
