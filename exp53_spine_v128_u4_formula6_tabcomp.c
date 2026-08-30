@@ -1,8 +1,8 @@
 /* Formula6 zero-cost table-compensation candidate.
-   Residual DAG is unchanged (4 FMA + 2 MUL). Only four 2^(j/128) table
-   entries implicated by the >4-ULP diagnostics are shifted by one binary64 ULP:
-     j=101,117,120: one ULP downward (formula6 was high)
-     j=123:         one ULP upward   (formula6 was low)
+   Residual DAG is unchanged (4 FMA + 2 MUL). Table compensation:
+     j=101: two ULP downward (remaining formula6 outlier was high after first nudge)
+     j=117,120: one ULP downward
+     j=123: one ULP upward
 */
 #include "exp53_spine_v128_u4_formula6.c"
 
@@ -32,7 +32,7 @@ static const double TAB128C[128] = {
   0x1.9c49182a3f090p+0, 0x1.9e86319e32323p+0, 0x1.a0c667b5de565p+0, 0x1.a309bec4a2d33p+0,
   0x1.a5503b23e255dp+0, 0x1.a799e1330b358p+0, 0x1.a9e6b5579fdbfp+0, 0x1.ac36bbfd3f37ap+0,
   0x1.ae89f995ad3adp+0, 0x1.b0e07298db665p+0, 0x1.b33a2b84f15fbp+0, 0x1.b59728de5593ap+0,
-  0x1.b7f76f2fb5e47p+0, 0x1.ba5b030a1064ap+0, 0x1.bcc1e904bc1d2p+0, 0x1.bf2c25bd71e09p+0,
+  0x1.b7f76f2fb5e47p+0, 0x1.ba5b030a10649p+0, 0x1.bcc1e904bc1d2p+0, 0x1.bf2c25bd71e09p+0,
   0x1.c199bdd85529cp+0, 0x1.c40ab5fffd07ap+0, 0x1.c67f12e57d14bp+0, 0x1.c8f6d9406e7b5p+0,
   0x1.cb720dcef9069p+0, 0x1.cdf0b555dc3fap+0, 0x1.d072d4a07897cp+0, 0x1.d2f87080d89f2p+0,
   0x1.d5818dcfba487p+0, 0x1.d80e316c98398p+0, 0x1.da9e603db3285p+0, 0x1.dd321f301b460p+0,
