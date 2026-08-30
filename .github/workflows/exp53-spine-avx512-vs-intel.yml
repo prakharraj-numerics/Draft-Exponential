@@ -3,11 +3,8 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'exp53_spine_v128_formula6_compfast.c'
-      - 'exp53_spine_v128_formula6_compfastC_frozen.c'
-      - 'exp53_spine_v128_formula6_allinfra.c'
-      - 'exp53_spine_v128_formula6_allinfra2.c'
-      - 'bench_exp53_allinfra2.c'
+      - 'exp53_spine_v128_formula6_finalinfra.c'
+      - 'bench_exp53_finalinfra.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
 permissions:
@@ -34,7 +31,7 @@ jobs:
           set -euo pipefail
           sudo find /etc/apt/sources.list.d -maxdepth 1 -type f \( -iname '*microsoft*' -o -iname '*azure*' \) -delete || true
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends build-essential binutils curl gpg-agent wget ca-certificates linux-tools-common linux-tools-generic || true
+          sudo apt-get install -y --no-install-recommends build-essential binutils gcc curl gpg-agent wget ca-certificates || true
           wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
           echo 'deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main' | sudo tee /etc/apt/sources.list.d/oneAPI.list >/dev/null
           sudo apt-get update -qq
@@ -48,25 +45,41 @@ jobs:
       - name: Install Intel oneAPI on cache miss
         if: steps.gate.outputs.eligible == '1' && steps.oneapicache.outputs.cache-hit != 'true'
         run: sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel intel-oneapi-compiler-dpcpp-cpp
-      - name: Build and run ALL infrastructure pass2
+      - name: Build and run final infrastructure matrix
         if: steps.gate.outputs.eligible == '1'
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
-          CC=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          SRC='exp53_spine_v128_formula6_finalinfra.c bench_exp53_finalinfra.c'
+          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           mkdir -p /tmp/exp53
-          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -qopt-report=3 -qopt-report-phase=all -qopt-report-file=/tmp/exp53/icx.optrpt -I"$MKLROOT/include" exp53_spine_v128_formula6_allinfra2.c bench_exp53_allinfra2.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_allinfra2
-          /tmp/bench_allinfra2 | tee /tmp/exp53/results.txt
-          objdump -d -Mintel /tmp/bench_allinfra2 > /tmp/exp53/assembly.txt
-          grep -A460 -E '<exp53_(all_pipe_u[456]|all_v2(fast|dd)_u[45])>:' /tmp/exp53/assembly.txt > /tmp/exp53/allinfra2_kernels.asm || true
-          sudo sysctl kernel.perf_event_paranoid=1 > /tmp/exp53/perf_sysctl.txt 2>&1 || true
-          { echo '=== PERF ==='; perf stat -e cycles,instructions,branches,branch-misses,cache-references,cache-misses /tmp/bench_allinfra2 >/dev/null; } 2> /tmp/exp53/perf.txt || true
-          { echo '=== VTUNE/APT ==='; command -v vtune || true; apt-cache policy intel-oneapi-vtune 2>/dev/null | head -20 || true; } > /tmp/exp53/vtune_detect.txt
+
+          buildrun(){
+            name="$1"; shift
+            echo "=== BUILD $name ==="
+            "$ICX" "$@" -I"$MKLROOT/include" $SRC $LINK -o "/tmp/$name"
+            echo "=== RUN $name ===" | tee "/tmp/exp53/$name.txt"
+            "/tmp/$name" | tee -a "/tmp/exp53/$name.txt"
+            objdump -d -Mintel "/tmp/$name" > "/tmp/exp53/$name.asm"
+          }
+
+          buildrun final_default -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -qopt-report=3 -qopt-report-file=/tmp/exp53/default.optrpt
+          buildrun final_zmmhigh -O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopt-report=3 -qopt-report-file=/tmp/exp53/zmmhigh.optrpt
+          buildrun final_ipo -O3 -xHost -qopt-zmm-usage=high -ipo -fp-model=precise -fno-math-errno -DNDEBUG
+
+          echo '=== GCC BUILD ==='
+          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG -I"$MKLROOT/include" $SRC $LINK -o /tmp/final_gcc || true
+          if [[ -x /tmp/final_gcc ]]; then echo '=== RUN final_gcc ===' | tee /tmp/exp53/final_gcc.txt; /tmp/final_gcc | tee -a /tmp/exp53/final_gcc.txt; objdump -d -Mintel /tmp/final_gcc > /tmp/exp53/final_gcc.asm; fi
+
+          grep -A520 -E '<exp53_final_(early|mid|split)_u[456]>:' /tmp/exp53/final_default.asm > /tmp/exp53/final_hot.asm || true
+          echo "ICX=$($ICX --version | head -1)" > /tmp/exp53/toolchain.txt
+          echo "GCC=$(gcc --version | head -1)" >> /tmp/exp53/toolchain.txt
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-allinfra2-${{ matrix.slot }}
+          name: exp53-finalinfra-${{ matrix.slot }}
           path: /tmp/exp53
           if-no-files-found: ignore
-# ALL-infrastructure-pass2
+# final-infrastructure-assault
