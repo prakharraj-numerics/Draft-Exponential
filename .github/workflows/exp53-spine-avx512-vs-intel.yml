@@ -1,16 +1,16 @@
-name: EXP53 spine AVX512 vs Intel
+name: EXP53 spine MPFR certification
 on:
   push:
     branches: [ main ]
     paths:
-      - 'diag_exp53_spinepoly.c'
+      - 'cert_exp53_spinepoly_mpfr.c'
       - 'exp53_spine_v128_spinepoly.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  benchmark:
+  certify:
     strategy:
       fail-fast: false
       matrix:
@@ -25,25 +25,23 @@ jobs:
           MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
           echo "CPU_MODEL=$MODEL"
           if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
-      - name: Base packages
+      - name: Install MPFR toolchain
         if: steps.gate.outputs.eligible == '1'
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends build-essential gcc binutils
-      - name: Build and run C-spine ULP diagnostic
+          sudo apt-get install -y --no-install-recommends build-essential gcc libmpfr-dev libgmp-dev
+      - name: Build and run directed-MPFR certification
         if: steps.gate.outputs.eligible == '1'
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
           set -euo pipefail
           mkdir -p /tmp/exp53
-          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG diag_exp53_spinepoly.c -lm -o /tmp/diag_spinepoly
-          /tmp/diag_spinepoly | tee /tmp/exp53/diag.txt
-          objdump -d -Mintel /tmp/diag_spinepoly > /tmp/exp53/diag.asm
+          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG cert_exp53_spinepoly_mpfr.c -lmpfr -lgmp -lm -o /tmp/cert_spinepoly
+          /tmp/cert_spinepoly | tee /tmp/exp53/mpfr_cert.txt
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-spinepoly-diag-${{ matrix.slot }}
+          name: exp53-spinepoly-mpfr-${{ matrix.slot }}
           path: /tmp/exp53
           if-no-files-found: ignore
-# C-spine-polynomial-diagnostic-retry
