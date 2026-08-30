@@ -8,7 +8,7 @@ on:
       - 'exp53_spine_v128_u4_formula6.c'
       - 'exp53_spine_v128_u4_formula6_tabcomp.c'
       - 'exp53_spine_v128_formula6_direct.c'
-      - 'exp53_spine_v128_formula6_dquad.c'
+      - 'exp53_spine_v128_formula6_direct_hiacc.c'
       - 'bench_exp53_spine_vs_intel.c'
       - 'bench_intel_exp_ha_1k_accuracy.c'
       - '.github/workflows/exp53-spine-avx512-vs-intel.yml'
@@ -51,24 +51,24 @@ jobs:
       - name: Install Intel oneAPI on cache miss
         if: steps.gate.outputs.eligible == '1' && steps.oneapicache.outputs.cache-hit != 'true'
         run: sudo apt-get install -y --no-install-recommends intel-oneapi-mkl-devel intel-oneapi-compiler-dpcpp-cpp
-      - name: Build Formula6 candidates benchmark
+      - name: Build accuracy-first Formula6 benchmark
         if: steps.gate.outputs.eligible == '1'
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
           CC=/opt/intel/oneapi/compiler/latest/bin/icx
-          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" exp53_spine_v128_formula6_dquad.c bench_exp53_spine_vs_intel.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_exp53
+          "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" exp53_spine_v128_formula6_direct_hiacc.c bench_exp53_spine_vs_intel.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_exp53
           "$CC" -O3 -xHost -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" bench_intel_exp_ha_1k_accuracy.c -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_intel_ha_acc
           mkdir -p /tmp/exp53
           /tmp/bench_exp53 | tee /tmp/exp53/results.txt
           /tmp/bench_intel_ha_acc | tee /tmp/exp53/intel_ha_1k_accuracy.txt
           objdump -d -Mintel /tmp/bench_exp53 > /tmp/exp53/assembly.txt
-          grep -A120 -E '<exp53_spine_v128_(u4_formula6(_tabcomp)?|formula6_(direct|dquad))>:' /tmp/exp53/assembly.txt > /tmp/exp53/kernels.asm || true
+          grep -A160 -E '<exp53_spine_v128_(u4_formula6|formula6_direct(_hiacc)?)>:' /tmp/exp53/assembly.txt > /tmp/exp53/kernels.asm || true
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.eligible == '1'
         with:
-          name: exp53-formula6-dquad-${{ matrix.slot }}
+          name: exp53-formula6-hiacc-${{ matrix.slot }}
           path: /tmp/exp53
           if-no-files-found: ignore
-# retrigger-dquad-fixed
+# accuracy-first-hiacc
