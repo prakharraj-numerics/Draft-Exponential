@@ -1,4 +1,5 @@
 name: EXP53 n2 ALL batch engine attack
+# retrigger 2026-08-31 all-batch pass 2
 on:
   push:
     paths:
