@@ -75,7 +75,7 @@ jobs:
             lscpu | grep -E 'Model name|Socket|Core|Thread|NUMA|CPU\(s\)' || true
           } | tee /tmp/tri/build.txt
 
-      - name: Benchmark pinned physical cores
+      - name: Benchmark original FastFlow topology
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
@@ -84,7 +84,8 @@ jobs:
           echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee "$OUT"
           echo "SHARD=${{ matrix.shard }}" | tee -a "$OUT"
           cat /tmp/tri/build.txt | tee -a "$OUT"
-          timeout 900s taskset -c 0,2 /tmp/tri/bench 2>&1 | tee -a "$OUT"
+          echo "AFFINITY=unrestricted original FastFlow-style process topology" | tee -a "$OUT"
+          timeout 900s /tmp/tri/bench 2>&1 | tee -a "$OUT"
 
       - name: Upload
         if: steps.cpu.outputs.eligible == '1'
