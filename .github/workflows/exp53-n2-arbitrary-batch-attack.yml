@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'exp53_n2_arbitrary_batch_attack.c'
+      - 'exp53_n2_stream_pipeline_attack.c'
       - 'bench_exp53_n2_arbitrary_batch_attack.c'
       - '.github/workflows/exp53-n2-arbitrary-batch-attack.yml'
 
@@ -40,7 +41,7 @@ jobs:
           COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
           LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           mkdir -p /tmp/arbattack
-          "$ICX" $COMMON -I"$MKLROOT/include" exp53_n2_stream_pipeline_attack.c exp53_n2_arbitrary_batch_attack.c bench_exp53_n2_arbitrary_batch_attack.c $LINK -o /tmp/arbattack/bench
+          "$ICX" $COMMON -I"$MKLROOT/include" exp53_n2_arbitrary_batch_attack.c bench_exp53_n2_arbitrary_batch_attack.c $LINK -o /tmp/arbattack/bench
           "$ICX" $COMMON -c exp53_n2_arbitrary_batch_attack.c -o /tmp/arbattack/candidate.o
           objdump -dr -M intel --disassemble=exp53_n2_u4_masktail /tmp/arbattack/candidate.o > /tmp/arbattack/u4_masktail.asm
           { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "ICX=$($ICX --version | head -1)"; echo "STATIC masktail_ins=$(grep -Ec '^ *[0-9a-f]+:' /tmp/arbattack/u4_masktail.asm || true) gather=$(grep -Eci 'vgather|vpgather' /tmp/arbattack/u4_masktail.asm || true) stack_vec=$(grep -Eci 'vmov[^ ]* .*\[(rsp|rbp)' /tmp/arbattack/u4_masktail.asm || true)"; } | tee /tmp/arbattack/static.txt
