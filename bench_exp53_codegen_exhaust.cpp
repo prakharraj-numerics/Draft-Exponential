@@ -9,7 +9,6 @@
 #include <mkl_vml.h>
 
 using F=void(*)(double*,const double*,size_t);
-extern "C" {
 void exp53_host_high(double*,const double*,size_t);
 void exp53_host_low(double*,const double*,size_t);
 void exp53_gr_high(double*,const double*,size_t);
@@ -18,7 +17,6 @@ void exp53_gr_nopref(double*,const double*,size_t);
 void exp53_gr_gshuf(double*,const double*,size_t);
 void exp53_gr_nogshuf(double*,const double*,size_t);
 void exp53_gr_O2(double*,const double*,size_t);
-}
 #define restrict __restrict__
 #include "exp53_n2_vmstyle_u4_0381_frozen.c"
 #undef restrict
