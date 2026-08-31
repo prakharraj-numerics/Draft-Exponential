@@ -14,6 +14,9 @@ void exp53_n2_cp64_attack(double*,const double*,size_t);
 typedef void (*fn_t)(double*,const double*,size_t);
 static volatile double sink;
 
+static void *xalloc(size_t bytes){
+    void *p=NULL; if(posix_memalign(&p,64,bytes)!=0 || !p){perror("posix_memalign");exit(2);} return p;
+}
 static uint64_t bits(double x){ uint64_t u; memcpy(&u,&x,8); return u; }
 static uint64_t ordered(double x){
     uint64_t u=bits(x);
@@ -35,10 +38,9 @@ static void intel_ha(double*out,const double*in,size_t n){ vmdExp((MKL_INT)n,in,
 
 static void accuracy(void){
     const size_t n=200000;
-    double *in=aligned_alloc(64,n*sizeof(double));
-    double *a=aligned_alloc(64,n*sizeof(double));
-    double *b=aligned_alloc(64,n*sizeof(double));
-    if(!in||!a||!b){perror("alloc");exit(2);}
+    double *in=xalloc(n*sizeof(double));
+    double *a=xalloc(n*sizeof(double));
+    double *b=xalloc(n*sizeof(double));
     for(size_t i=0;i<n;i++) in[i]=rnd_domain();
     exp53_n2_vmstyle_u4_0381_frozen(a,in,n);
     exp53_n2_cp64_attack(b,in,n);
@@ -58,9 +60,8 @@ static double nsnow(void){
     return (double)t.tv_sec*1e9+(double)t.tv_nsec;
 }
 static double bench(fn_t f,size_t n){
-    double *in=aligned_alloc(64,n*sizeof(double));
-    double *out=aligned_alloc(64,n*sizeof(double));
-    if(!in||!out){perror("alloc");exit(2);}
+    double *in=xalloc(n*sizeof(double));
+    double *out=xalloc(n*sizeof(double));
     for(size_t i=0;i<n;i++) in[i]=rnd_domain();
     for(int w=0;w<20;w++) f(out,in,n);
     int calls=(int)(12000000ULL/n); if(calls<80)calls=80; if(calls>4000)calls=4000;
