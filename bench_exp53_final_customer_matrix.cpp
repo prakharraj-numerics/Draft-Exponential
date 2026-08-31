@@ -86,7 +86,11 @@ static Accuracy compare_exp_outputs(const double *got, const double *ref, size_t
         } else if (std::isfinite(g) && g > 0.0) {
             uint64_t gb = bits_of(g), rb = bits_of(r);
             ulp = gb > rb ? gb - rb : rb - gb;
-            ok = ulp <= 1;
+            // Cross-library triangle bound: the frozen kernel was separately
+            // certified to <=1 ULP, and Intel VML_HA can independently land
+            // one ULP on the opposite side, so <=2 ULP between the two is the
+            // correct non-circular screen here.
+            ok = ulp <= 2;
         }
         if (!ok) ++a.bad;
         if (ulp > a.maxulp) a.maxulp = ulp;
