@@ -1,0 +1,102 @@
+name: EXP53 VCL+u2z 50-step crossover vs Intel HA
+
+on:
+  push:
+    paths:
+      - 'exp53_vcl_u2z_candidate.cpp'
+      - 'bench_exp53_vcl_u2z_50step_sweep.cpp'
+      - '.github/workflows/exp53-vcl-u2z-50step-sweep.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact Xeon topology
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Restore VCL
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/vcl-exp53
+          key: exp53-vcl-dc6cb6cea60bb983314c33386f5f4a7fae5b7efb-v1
+      - name: Fetch pinned VCL on cache miss
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f /home/runner/vcl-exp53/vectorclass.h ]]; then
+            rm -rf /home/runner/vcl-exp53
+            git clone -q https://github.com/vectorclass/version2.git /home/runner/vcl-exp53
+            git -C /home/runner/vcl-exp53 checkout -q dc6cb6cea60bb983314c33386f5f4a7fae5b7efb
+          fi
+      - name: Build VCL u2z candidate
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/vclu2z
+          CROOT=/opt/intel/oneapi/compiler/latest
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          "$CROOT/bin/icpx" -std=c++17 $COMMON -I/home/runner/vcl-exp53 -c exp53_vcl_u2z_candidate.cpp -o /tmp/vclu2z/cand.o
+          "$CROOT/bin/icpx" -std=c++17 $COMMON -I"$MKLROOT/include" bench_exp53_vcl_u2z_50step_sweep.cpp /tmp/vclu2z/cand.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/vclu2z/bench
+          echo "HEAD=$(git rev-parse HEAD)" | tee /tmp/vclu2z/build.txt
+          echo "VCL_SHA=$(git -C /home/runner/vcl-exp53 rev-parse HEAD)" | tee -a /tmp/vclu2z/build.txt
+          echo "CANDIDATE_BLOB=$(git hash-object exp53_vcl_u2z_candidate.cpp)" | tee -a /tmp/vclu2z/build.txt
+      - name: Benchmark 50 through 3000 by 50
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          LD_LIBRARY_PATH: /opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/mkl/latest/lib
+          MKL_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          RAW=/tmp/vclu2z/raw.txt; OUT=/tmp/vclu2z/results.txt; : > "$RAW"
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee "$OUT"
+          echo "SHARD=${{ matrix.shard }}" | tee -a "$OUT"
+          cat /tmp/vclu2z/build.txt | tee -a "$OUT"
+          echo "STACKS=vclu2z,intel_vml_ha" | tee -a "$OUT"
+          run_one(){ local stack="$1" rev="$2"; SWEEP_REVERSE="$rev" timeout 300s /tmp/vclu2z/bench "$stack" | tee -a "$RAW"; }
+          for rep in 1 2 3 4 5; do
+            if (( rep % 2 )); then run_one vclu2z 0; run_one intel 0; else run_one intel 1; run_one vclu2z 1; fi
+          done
+          python3 - <<'PY' | tee -a "$OUT"
+          import re,statistics
+          from collections import defaultdict
+          d=defaultdict(list)
+          p=re.compile(r'RESULT stack=(vclu2z|intel) domain=(unit|mid) n=(\d+) calls=(\d+) ns=([0-9.]+)')
+          for line in open('/tmp/vclu2z/raw.txt'):
+              m=p.search(line)
+              if m:d[(m.group(1),m.group(2),int(m.group(3)))].append(float(m.group(5)))
+          for dom in ('unit','mid'):
+              print('CATEGORY domain='+dom)
+              for n in range(50,3001,50):
+                  a=statistics.median(d[('vclu2z',dom,n)]); b=statistics.median(d[('intel',dom,n)])
+                  if len(d[('vclu2z',dom,n)])!=5 or len(d[('intel',dom,n)])!=5: raise SystemExit('missing')
+                  print(f'FINAL domain={dom} n={n} vclu2z={a:.9f} intel={b:.9f} winner={"OURS" if a<b else "INTEL"} intel_over_ours={b/a:.6f}')
+          PY
+      - name: Upload VCL u2z sweep
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-vcl-u2z-${{ matrix.shard }}
+          path: /tmp/vclu2z
