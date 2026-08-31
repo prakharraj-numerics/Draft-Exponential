@@ -81,6 +81,7 @@ jobs:
           echo "STREAMING_OUTPUT=approximately_256MiB_aligned_rotating_ring" | tee -a "$OUT"
           echo "INPUT_SIGNS=exact_half_positive_half_negative_interleaved" | tee -a "$OUT"
           echo "DOMAINS=unit_and_mid_only_extreme_deferred" | tee -a "$OUT"
+          echo "PRODUCTION_DISPATCH=n_le_3000_serial_temporal_else_custom2_with_explicit_nt" | tee -a "$OUT"
 
           run_one() {
             local stack="$1" policy="$2" rep="$3"
@@ -117,7 +118,7 @@ jobs:
               d[k]['maxulp'].append(int(m.group(11)))
           phases={
             'low':[50,100,250,500,800,1000,2000,3000],
-            'medium':[5000,8000,15000,25000,35000,50000,65000],
+            'medium':[3500,4000,4500,5000,8000,15000,25000,35000,50000,65000],
             'high':[200000,500000,1000000,1500000,2500000],
             'highest':[4000000,5000000,8000000],
           }
