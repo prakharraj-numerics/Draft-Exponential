@@ -1,0 +1,67 @@
+name: EXP53 frozen under VML HA LA EP
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'exp53_n2_vmstyle_u4_0381_frozen.c'
+      - 'exp53_n2_vmstyle_u4_vml_modes.c'
+      - 'bench_exp53_n2_vml_applied.c'
+      - '.github/workflows/exp53-n2-vml-applied.yml'
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Xeon 6973P-C
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Compile
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          FLAGS='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
+          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
+          "$ICX" $FLAGS -I"$MKLROOT/include" exp53_n2_vmstyle_u4_0381_frozen.c exp53_n2_vmstyle_u4_vml_modes.c bench_exp53_n2_vml_applied.c $LINK -o /tmp/ours_vml_modes
+
+      - name: Benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=/tmp/ours_vml_modes.txt
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee "$OUT"
+          echo "SHARD=${{ matrix.shard }}" | tee -a "$OUT"
+          timeout 240s /tmp/ours_vml_modes 2>&1 | tee -a "$OUT"
+
+      - name: Upload
+        if: always() && steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-ours-vml-modes-${{ matrix.shard }}
+          path: /tmp/ours_vml_modes.txt
