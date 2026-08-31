@@ -7,6 +7,7 @@ on:
       - 'bench_exp53_n2_vmstyle_attack.c'
       - '.github/workflows/exp53-n2-vmstyle-attack.yml'
 
+# retrigger 2: unchanged benchmark, hunt for Xeon 6973P-C
 jobs:
   attack:
     strategy:
