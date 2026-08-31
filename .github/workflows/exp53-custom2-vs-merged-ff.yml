@@ -1,0 +1,122 @@
+name: EXP53 custom permanent 2-core vs merged FastFlow
+
+on:
+  push:
+    paths:
+      - 'exp53_batch_custom_2core_candidate.hpp'
+      - 'bench_exp53_custom2_vs_merged_ff.cpp'
+      - '.github/workflows/exp53-custom2-vs-merged-ff.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check exact Xeon topology
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          echo "NPROC=$(nproc)"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Fetch pinned FastFlow
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/fastflow
+          git init -q /tmp/fastflow
+          git -C /tmp/fastflow remote add origin https://github.com/fastflow/fastflow.git
+          git -C /tmp/fastflow fetch -q --depth 1 origin d476f66ab924d8d122f54b4b90aee00ef979aea8
+          git -C /tmp/fastflow checkout -q FETCH_HEAD
+
+      - name: Build
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/c2
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          "$ICX" $COMMON -c exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/c2/nt.o
+          "$ICPX" -std=c++17 $COMMON -I/tmp/fastflow bench_exp53_custom2_vs_merged_ff.cpp /tmp/c2/nt.o -pthread -lm -o /tmp/c2/bench
+          {
+            echo "ICX=$($ICX --version | head -1)"
+            echo "FASTFLOW_SHA=$(git -C /tmp/fastflow rev-parse HEAD)"
+            echo "HEAD=$(git rev-parse HEAD)"
+            lscpu | grep -E 'Model name|Socket|Core|Thread|NUMA|CPU\(s\)' || true
+          } | tee /tmp/c2/build.txt
+
+      - name: Benchmark custom2 vs merged FF
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW=/tmp/c2/raw.txt
+          OUT=/tmp/c2/results.txt
+          : > "$RAW"
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee "$OUT"
+          echo "SHARD=${{ matrix.shard }}" | tee -a "$OUT"
+          cat /tmp/c2/build.txt | tee -a "$OUT"
+          echo "CUSTOM_AFFINITY=caller_CPU0 helper_CPU2" | tee -a "$OUT"
+          echo "FF_AFFINITY=validated_unrestricted_process_topology" | tee -a "$OUT"
+          echo "PROCESS_ISOLATION=custom_and_ff_never_alive_together" | tee -a "$OUT"
+
+          for r in 1 2 3 4 5; do
+            if (( r % 2 )); then
+              timeout 180s /tmp/c2/bench custom | tee -a "$RAW"
+              timeout 180s /tmp/c2/bench ff     | tee -a "$RAW"
+            else
+              timeout 180s /tmp/c2/bench ff     | tee -a "$RAW"
+              timeout 180s /tmp/c2/bench custom | tee -a "$RAW"
+            fi
+          done
+
+          python3 - <<'PY' | tee -a "$OUT"
+          import re,statistics
+          from collections import defaultdict
+          d=defaultdict(lambda: {'hot':[],'stream':[]})
+          for line in open('/tmp/c2/raw.txt'):
+              m=re.search(r'METHOD stack=(custom2|merged_ff) n=(\d+) calls=(\d+) slots=(\d+) hot_ns=([0-9.]+) stream_nt_ns=([0-9.]+)',line)
+              if m:
+                  key=(m.group(1),int(m.group(2)))
+                  d[key]['hot'].append(float(m.group(5)))
+                  d[key]['stream'].append(float(m.group(6)))
+          for n in [5000,8000,15000,25000,35000,50000,65000]:
+              c=d[('custom2',n)]; f=d[('merged_ff',n)]
+              if any(len(x)!=5 for x in [c['hot'],c['stream'],f['hot'],f['stream']]):
+                  raise SystemExit(f'missing samples n={n} data={c} {f}')
+              ch=statistics.median(c['hot']); fh=statistics.median(f['hot'])
+              cs=statistics.median(c['stream']); fs=statistics.median(f['stream'])
+              print(f'FINAL n={n} custom_hot={ch:.9f} ff_hot={fh:.9f} ff_over_custom_hot={fh/ch:.6f} custom_stream_nt={cs:.9f} ff_stream_nt={fs:.9f} ff_over_custom_stream={fs/cs:.6f}')
+              print(f'RUNS n={n} custom_hot={c["hot"]} ff_hot={f["hot"]} custom_stream={c["stream"]} ff_stream={f["stream"]}')
+          PY
+
+      - name: Upload
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-custom2-vs-ff-${{ matrix.shard }}
+          path: /tmp/c2
