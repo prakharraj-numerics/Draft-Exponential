@@ -1,4 +1,4 @@
-// Final customer-matrix rerun against the current production dispatch policy.
+// Final customer-matrix rerun with lazy custom runtime: no helper exists while n<=3K.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
