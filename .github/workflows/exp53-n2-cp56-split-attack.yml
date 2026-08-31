@@ -1,0 +1,69 @@
+name: EXP53 n2 CP56 split-gather attack
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'exp53_n2_cp56_split_attack.c'
+      - 'bench_exp53_n2_cp56_split_attack.c'
+      - '.github/workflows/exp53-n2-cp56-split-attack.yml'
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Build and audit
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cpsplit
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
+          "$ICX" $COMMON -c exp53_n2_cp56_split_attack.c -o /tmp/cpsplit.o
+          "$ICX" $COMMON -I"$MKLROOT/include" /tmp/cpsplit.o bench_exp53_n2_cp56_split_attack.c $LINK -o /tmp/cpsplit_bench
+          : > /tmp/cpsplit/static.txt
+          for fn in exp53_n2_vmstyle_u4_0381_frozen exp53_n2_cp56_attack exp53_n2_cp56_split52 exp53_n2_cp56_split61; do
+            objdump --no-show-raw-insn -d -M intel --disassemble="$fn" /tmp/cpsplit.o > "/tmp/cpsplit/${fn}.asm"
+            F="/tmp/cpsplit/${fn}.asm"; ins=$(grep -Ec '^ *[0-9a-f]+:' "$F"||true); gather=$(grep -Eci 'vgather|vpgather' "$F"||true); fma=$(grep -Eci 'vfmadd|vfnmadd|vfmsub' "$F"||true); mul=$(grep -Eci '\bvmulpd\b' "$F"||true); zmm=$(grep -Eo 'zmm[0-9]+' "$F"|sort -u|wc -l); zspill=$(grep -Eci 'vmov[^#]*\[(rsp|rbp)|\[(rsp|rbp)[^#]*zmm|zmm[^#]*\[(rsp|rbp)' "$F"||true)
+            echo "CPSPLIT_STATIC fn=$fn ins=$ins gathers=$gather fma_family=$fma mulpd=$mul zmm=$zmm vector_stack_refs=$zspill" | tee -a /tmp/cpsplit/static.txt
+            echo "CPSPLIT_GATHER_POS fn=$fn $(grep -nE 'vgather|vpgather' "$F" | cut -d: -f1 | tr '\n' ',' )" | tee -a /tmp/cpsplit/static.txt
+          done
+          echo "ICX=$($ICX --version|head -1)" | tee /tmp/cpsplit/build.txt
+          cat /tmp/cpsplit/static.txt | tee -a /tmp/cpsplit/build.txt
+      - name: Accuracy and benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=/tmp/cpsplit/results.txt
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee "$OUT"
+          echo "SHARD=${{ matrix.shard }}" | tee -a "$OUT"
+          cat /tmp/cpsplit/build.txt | tee -a "$OUT"
+          timeout 300s /tmp/cpsplit_bench 2>&1 | tee -a "$OUT"
+      - name: Upload
+        if: always() && steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-n2-cpsplit-${{ matrix.shard }}
+          path: /tmp/cpsplit
