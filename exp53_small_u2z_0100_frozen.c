@@ -10,12 +10,21 @@
        intentionally dispatched only through n=100.
 
    Mathematical spine/constants/table are identical to
-   exp53_n2_vmstyle_u4_0381_frozen.c.  Only loop width/scheduling differs.
+   exp53_n2_vmstyle_u4_0381_frozen.c. Only loop width/scheduling differs.
    Tail falls back to the immutable frozen VM-style kernel.
+
+   Integration note:
+     This production translation unit includes the already-frozen rare-NT
+     implementation, which in turn includes the immutable VM-style baseline.
+     Therefore compiling THIS file alone exports all three production C symbols:
+       exp53_n2_vmstyle_u4_0381_frozen
+       exp53_n2_vmstyle_u4_0381_nt_sfence
+       exp53_small_u2z_0100_frozen
+     Do not separately compile the included C files into the same executable.
 
    DO NOT MODIFY. Future experiments must use new candidate files.
 */
-#include "exp53_n2_vmstyle_u4_0381_frozen.c"
+#include "exp53_n2_vmstyle_u4_0381_nt_sfence.c"
 
 __attribute__((target("avx512f,avx512dq,fma"),noinline))
 void exp53_small_u2z_0100_frozen(double *restrict out,
