@@ -25,14 +25,29 @@ template<class F>static double tim(F f,size_t n,size_t c,int k=7){for(int i=0;i<
 
 struct ExpTask: enki::ITaskSet{
   double*out=nullptr; const double*in=nullptr;
-  void ExecuteRange(enki::TaskSetPartition r,uint32_t) override { exp53_n2_vmstyle_u4_0381_frozen(out+r.start,in+r.start,(size_t)(r.end-r.start)); }
+  void ExecuteRange(enki::TaskSetPartition r,uint32_t) override {
+    const size_t begin=(size_t)r.start*32;
+    const size_t count=(size_t)(r.end-r.start)*32;
+    exp53_n2_vmstyle_u4_0381_frozen(out+begin,in+begin,count);
+  }
 };
 
 class EnkiExp53{
  public:
   EnkiExp53(){pin_cpu(0);enki::TaskSchedulerConfig cfg;cfg.numTaskThreadsToCreate=1;cfg.numExternalTaskThreads=0;cfg.profilerCallbacks.threadStart=enki_thread_start;ts.Initialize(cfg);} 
   ~EnkiExp53(){ts.WaitforAllAndShutdown();}
-  void run(double*out,const double*in,size_t n,uint32_t grain){task.out=out;task.in=in;task.m_SetSize=(uint32_t)n;task.m_MinRange=grain;ts.AddTaskSetToPipe(&task);ts.WaitforTask(&task);} 
+  void run(double*out,const double*in,size_t n,uint32_t grain_elements){
+    const uint32_t blocks=(uint32_t)(n/32);
+    const size_t prefix=(size_t)blocks*32;
+    if(blocks){
+      task.out=out;task.in=in;task.m_SetSize=blocks;
+      uint32_t grain_blocks=std::max<uint32_t>(1,grain_elements/32);
+      if(grain_blocks>blocks)grain_blocks=blocks;
+      task.m_MinRange=grain_blocks;
+      ts.AddTaskSetToPipe(&task);ts.WaitforTask(&task);
+    }
+    if(prefix<n)exp53_n2_vmstyle_u4_0381_frozen(out+prefix,in+prefix,n-prefix);
+  }
  private: enki::TaskScheduler ts; ExpTask task;
 };
 
@@ -40,7 +55,7 @@ int main(){
   constexpr size_t M=2000;B in(M),ref(M),out(M);EnkiExp53 enki;
   const uint32_t grains[]={32,64,96,128,160,192,256,320,384,512,768,1024};
   std::vector<size_t> sizes;sizes.push_back(101);for(size_t n=150;n<=2000;n+=50)sizes.push_back(n);
-  std::cout<<std::fixed<<std::setprecision(9)<<"ENKITS_EXP53 version=v1.12 sizes=101,150..2000 threads=2 cpu0+cpu2 grains=12 math=frozen bitwise_gate=required\n";
+  std::cout<<std::fixed<<std::setprecision(9)<<"ENKITS_EXP53 version=v1.12 sizes=101,150..2000 threads=2 cpu0+cpu2 grains=12 task_units=32elem_blocks tail=frozen_serial math=frozen bitwise_gate=required\n";
   for(int d=0;d<2;d++){
     const char*dn=d?"mid":"unit";
     for(size_t n:sizes){
