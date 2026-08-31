@@ -1,0 +1,108 @@
+name: EXP53 batch4 VCL xsimd VDT MIPP
+on:
+  workflow_dispatch:
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Xeon 6973P-C
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Restore external source cache
+        if: steps.cpu.outputs.eligible == '1'
+        id: extcache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/exp53-batch4-libs
+          key: exp53-batch4-vcl-dc6cb6c-xsimd-3b3151f-vdt-fc894d2-mipp-9582f84-v1
+
+      - name: Fetch pinned libraries on cache miss
+        if: steps.cpu.outputs.eligible == '1' && steps.extcache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ROOT=/home/runner/exp53-batch4-libs
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
+          git clone -q https://github.com/vectorclass/version2.git "$ROOT/vcl"
+          git -C "$ROOT/vcl" checkout -q dc6cb6cea60bb983314c33386f5f4a7fae5b7efb
+          git clone -q https://github.com/xtensor-stack/xsimd.git "$ROOT/xsimd"
+          git -C "$ROOT/xsimd" checkout -q 3b3151ff665514a00a437cc985f47b7de99b772b
+          git clone -q https://github.com/dpiparo/vdt.git "$ROOT/vdt"
+          git -C "$ROOT/vdt" checkout -q fc894d2ac53426bd8cac14f1e685e1ce8630ffff
+          git clone -q https://github.com/aff3ct/MIPP.git "$ROOT/mipp"
+          git -C "$ROOT/mipp" checkout -q 9582f844b2b111829d3aa52f97ebd1efcec66ac7
+
+      - name: Compile all four variants
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -u
+          ROOT=/home/runner/exp53-batch4-libs
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          CFLAGS='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
+          "$ICX" $CFLAGS -c exp53_n2_fused_u4_038_frozen.c -o /tmp/frozen.o
+          : > /tmp/compile_status.txt
+          compile_one() {
+            name="$1"; macro="$2"; inc="$3"
+            echo "=== COMPILE $name ===" | tee -a /tmp/compile_status.txt
+            if "$ICPX" $CFLAGS -std=c++17 "$macro" $inc bench_exp53_batch4.cpp /tmp/frozen.o -lm -o "/tmp/b4_$name" >>/tmp/compile_status.txt 2>&1; then
+              echo "COMPILE_OK $name" | tee -a /tmp/compile_status.txt
+            else
+              echo "COMPILE_FAIL $name" | tee -a /tmp/compile_status.txt
+            fi
+          }
+          compile_one vcl   -DUSE_VCL   "-I$ROOT/vcl"
+          compile_one xsimd -DUSE_XSIMD "-I$ROOT/xsimd/include"
+          compile_one vdt   -DUSE_VDT   "-I$ROOT/vdt/include"
+          compile_one mipp  -DUSE_MIPP  "-I$ROOT/mipp/include"
+          cat /tmp/compile_status.txt
+
+      - name: Run bounded benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -u
+          OUT=/tmp/batch4_results.txt
+          : > "$OUT"
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee -a "$OUT"
+          echo "SHARD=${{ matrix.shard }}" | tee -a "$OUT"
+          cat /tmp/compile_status.txt | tee -a "$OUT"
+          timeout 240s bash -c '
+            for n in vcl xsimd vdt mipp; do
+              if [[ -x /tmp/b4_$n ]]; then
+                echo "=== RUN $n ==="
+                /tmp/b4_$n
+              else
+                echo "RUN_SKIP $n compile_failed"
+              fi
+            done
+          ' 2>&1 | tee -a "$OUT"
+
+      - name: Upload result
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-batch4-${{ matrix.shard }}
+          path: |
+            /tmp/batch4_results.txt
+            /tmp/compile_status.txt
