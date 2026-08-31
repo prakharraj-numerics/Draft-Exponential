@@ -49,13 +49,11 @@ static void fill_inputs(double *x, size_t n, int domain) {
         double m;
         if (domain == 0) {
             const double e = 0x1p-20;
-            m = e + u * (1.0 - 2.0 * e);              // strictly 0 < |x| < 1
+            m = e + u * (1.0 - 2.0 * e);
         } else {
             const double e = 0x1p-20;
-            m = 1.0 + e + u * (99.0 - 2.0 * e);       // strictly 1 < |x| < 100
+            m = 1.0 + e + u * (99.0 - 2.0 * e);
         }
-        // Exact half positive / half negative for every requested (even) n,
-        // interleaved so both physical workers see both signs.
         x[i] = (i & 1) ? -m : m;
     }
 }
@@ -86,10 +84,6 @@ static Accuracy compare_exp_outputs(const double *got, const double *ref, size_t
         } else if (std::isfinite(g) && g > 0.0) {
             uint64_t gb = bits_of(g), rb = bits_of(r);
             ulp = gb > rb ? gb - rb : rb - gb;
-            // Cross-library triangle bound: the frozen kernel was separately
-            // certified to <=1 ULP, and Intel VML_HA can independently land
-            // one ULP on the opposite side, so <=2 ULP between the two is the
-            // correct non-circular screen here.
             ok = ulp <= 2;
         }
         if (!ok) ++a.bad;
@@ -100,7 +94,7 @@ static Accuracy compare_exp_outputs(const double *got, const double *ref, size_t
 
 static const std::vector<size_t>& sizes_for_phase(const std::string& phase) {
     static const std::vector<size_t> low     = {50,100,250,500,800,1000,2000,3000};
-    static const std::vector<size_t> medium  = {5000,8000,15000,25000,35000,50000,65000};
+    static const std::vector<size_t> medium  = {3500,4000,4500,5000,8000,15000,25000,35000,50000,65000};
     static const std::vector<size_t> high    = {200000,500000,1000000,1500000,2500000};
     static const std::vector<size_t> highest = {4000000,5000000,8000000};
     if (phase == "low") return low;
