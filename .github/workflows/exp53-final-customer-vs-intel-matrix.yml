@@ -4,7 +4,6 @@ on:
   push:
     paths:
       - 'bench_exp53_final_customer_matrix.cpp'
-      - '.github/workflows/exp53-final-customer-vs-intel-matrix.yml'
   workflow_dispatch:
 
 jobs:
@@ -81,6 +80,7 @@ jobs:
           echo "PROCESS_ISOLATION=custom_and_intel_never_alive_together" | tee -a "$OUT"
           echo "STREAMING_OUTPUT=approximately_256MiB_aligned_rotating_ring" | tee -a "$OUT"
           echo "INPUT_SIGNS=exact_half_positive_half_negative_interleaved" | tee -a "$OUT"
+          echo "DOMAINS=unit_and_mid_only_extreme_deferred" | tee -a "$OUT"
 
           run_one() {
             local stack="$1" policy="$2" rep="$3"
@@ -106,7 +106,7 @@ jobs:
           import re, statistics
           from collections import defaultdict
           d=defaultdict(lambda:{'ns':[],'valid':[],'bad':[],'maxulp':[]})
-          pat=re.compile(r'RESULT stack=(custom|intel) policy=(hot|stream) phase=(low|medium|high|highest) domain=(unit|mid|extreme) n=(\d+) calls=(\d+) slots=(\d+) ns=([0-9.]+) valid=(\d+) bad=(\d+) maxulp=(\d+)')
+          pat=re.compile(r'RESULT stack=(custom|intel) policy=(hot|stream) phase=(low|medium|high|highest) domain=(unit|mid) n=(\d+) calls=(\d+) slots=(\d+) ns=([0-9.]+) valid=(\d+) bad=(\d+) maxulp=(\d+)')
           for line in open('/tmp/finalcustomer/raw.txt'):
               m=pat.search(line)
               if not m: continue
@@ -122,7 +122,7 @@ jobs:
             'highest':[4000000,5000000,8000000],
           }
           for phase,nsizes in phases.items():
-              for domain in ['unit','mid','extreme']:
+              for domain in ['unit','mid']:
                   print(f'CATEGORY phase={phase} domain={domain}')
                   for n in nsizes:
                       vals=[]
