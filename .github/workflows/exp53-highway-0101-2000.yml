@@ -59,3 +59,4 @@ jobs:
         with:
           name: exp53-highway-0101-2000-${{ matrix.shard }}
           path: /tmp/result.txt
+# trigger: highway-static-simd-101-2000
