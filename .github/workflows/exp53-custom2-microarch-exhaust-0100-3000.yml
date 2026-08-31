@@ -1,3 +1,4 @@
+# fresh-run trigger 2026-09-01
 name: EXP53 custom2 microarchitecture exhaust 100-3000 Xeon
 on:
   push:
