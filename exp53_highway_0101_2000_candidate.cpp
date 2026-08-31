@@ -2,7 +2,12 @@
 // No hwy::Exp or replacement math is used. Operation order mirrors the frozen AVX-512 kernel.
 #define HWY_COMPILE_ONLY_STATIC
 #include "hwy/highway.h"
+// The frozen production kernel is C and uses the C99 restrict keyword. This
+// experiment includes it only to reuse its exact constants/table/tail code;
+// map restrict to the C++ spelling without modifying the frozen source itself.
+#define restrict __restrict__
 #include "exp53_n2_vmstyle_u4_0381_frozen.c"
+#undef restrict
 
 namespace hn = hwy::HWY_NAMESPACE;
 
