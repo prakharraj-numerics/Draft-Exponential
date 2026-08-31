@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'exp53_batch_custom_2core_nt_frozen.hpp'
+      - 'exp53_custom2_storeseq_2000_3000_frozen.hpp'
       - 'exp53_batch_production.hpp'
       - 'exp53_small_u2z_0100_frozen.c'
       - 'smoke_exp53_custom2_final_frozen.cpp'
@@ -56,5 +57,6 @@ jobs:
           echo "SHARD=${{ matrix.shard }}"
           echo "HEAD=$(git rev-parse HEAD)"
           echo "U2Z_FROZEN_BLOB=$(git hash-object exp53_small_u2z_0100_frozen.c)"
+          echo "STORESEQ_2K3K_FROZEN_BLOB=$(git hash-object exp53_custom2_storeseq_2000_3000_frozen.hpp)"
           echo "PRODUCTION_BLOB=$(git hash-object exp53_batch_production.hpp)"
           /tmp/final_smoke
