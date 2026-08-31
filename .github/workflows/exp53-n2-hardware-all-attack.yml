@@ -59,8 +59,8 @@ jobs:
             BYTES=$(nm -S --size-sort /tmp/hw | awk -v f="$F" '$4==f{print strtonum("0x"$2)}')
             INS=$(grep -Ec '^\s+[0-9a-f]+:' /tmp/$F.asm || true)
             STACK=$(grep -Eic '\[(rsp|rbp)[^]]*\]' /tmp/$F.asm || true)
-            ZMM=$(grep -Eo 'zmm[0-9]+' /tmp/$F.asm | sort -u | wc -l)
-            YMM=$(grep -Eo 'ymm[0-9]+' /tmp/$F.asm | sort -u | wc -l)
+            ZMM=$( (grep -Eo 'zmm[0-9]+' /tmp/$F.asm || true) | sort -u | wc -l )
+            YMM=$( (grep -Eo 'ymm[0-9]+' /tmp/$F.asm || true) | sort -u | wc -l )
             GATHER=$(grep -Eic 'vgather|vpgather' /tmp/$F.asm || true)
             echo "HW_STATIC $F bytes=$BYTES ins=$INS stack=$STACK zmm=$ZMM ymm=$YMM gather=$GATHER" | tee -a /tmp/hw_static.txt
           done
