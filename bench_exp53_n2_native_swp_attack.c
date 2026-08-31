@@ -10,10 +10,11 @@
 typedef void (*fn_t)(double*,const double*,size_t);
 void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
 void exp53_n2_native_default(double*,const double*,size_t);
-void exp53_n2_native_swp_enable(double*,const double*,size_t);
+void exp53_n2_native_swp_disable(double*,const double*,size_t);
 void exp53_n2_native_swp_ii1(double*,const double*,size_t);
 void exp53_n2_native_swp_ii2(double*,const double*,size_t);
 void exp53_n2_native_swp_ii4(double*,const double*,size_t);
+void exp53_n2_native_swp_ii8(double*,const double*,size_t);
 void exp53_n2_native_interleave2(double*,const double*,size_t);
 void exp53_n2_native_interleave4(double*,const double*,size_t);
 
@@ -60,18 +61,19 @@ int main(void){
     struct {const char*n;fn_t f;} a[]={
       {"FROZEN",exp53_n2_vmstyle_u4_0381_frozen},
       {"NATIVE_DEFAULT",exp53_n2_native_default},
-      {"SWP_ENABLE",exp53_n2_native_swp_enable},
+      {"SWP_DISABLE",exp53_n2_native_swp_disable},
       {"SWP_II1",exp53_n2_native_swp_ii1},
       {"SWP_II2",exp53_n2_native_swp_ii2},
       {"SWP_II4",exp53_n2_native_swp_ii4},
+      {"SWP_II8",exp53_n2_native_swp_ii8},
       {"INTERLEAVE2",exp53_n2_native_interleave2},
       {"INTERLEAVE4",exp53_n2_native_interleave4},
       {"VML_HA",intel_ha}
     };
-    for(size_t k=0;k<8;k++)screen(a[k].n,a[k].f,ain,fro,an);
+    for(size_t k=0;k<9;k++)screen(a[k].n,a[k].f,ain,fro,an);
     free(ain);free(fro);
     const size_t ns[]={10079,12288,65536};
-    for(size_t z=0;z<3;z++)for(size_t k=0;k<9;k++)
+    for(size_t z=0;z<3;z++)for(size_t k=0;k<10;k++)
       printf("NATIVESWP_TIME name=%s n=%zu ns_per_input=%.9f\n",a[k].n,ns[z],bench(a[k].f,ns[z]));
     return sink==1234567.0;
 }

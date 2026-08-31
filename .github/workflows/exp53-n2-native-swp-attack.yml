@@ -52,15 +52,19 @@ jobs:
           echo "ICX=$($ICX --version | head -1)" | tee /tmp/nativeswp/build.txt
           echo "COMMON=$COMMON" | tee -a /tmp/nativeswp/build.txt
 
-          # Explicitly force LLVM's machine software-pipeliner on for the attack.
-          "$ICX" $COMMON $REMARKS -mllvm -enable-pipeliner=true -c exp53_n2_native_swp_attack.c -o /tmp/native_on.o 2> /tmp/nativeswp/remarks_on.txt
-          # Negative control: same source with machine pipeliner globally disabled.
-          "$ICX" $COMMON -mllvm -enable-pipeliner=false -c exp53_n2_native_swp_attack.c -o /tmp/native_off.o 2> /tmp/nativeswp/remarks_off.txt
+          if ! "$ICX" $COMMON $REMARKS -mllvm -enable-pipeliner=true -c exp53_n2_native_swp_attack.c -o /tmp/native_on.o 2> /tmp/nativeswp/remarks_on.txt; then
+            cat /tmp/nativeswp/remarks_on.txt
+            exit 1
+          fi
+          if ! "$ICX" $COMMON -mllvm -enable-pipeliner=false -c exp53_n2_native_swp_attack.c -o /tmp/native_off.o 2> /tmp/nativeswp/remarks_off.txt; then
+            cat /tmp/nativeswp/remarks_off.txt
+            exit 1
+          fi
 
           "$ICX" $COMMON $REMARKS -mllvm -enable-pipeliner=true -I"$MKLROOT/include" \
             /tmp/native_on.o bench_exp53_n2_native_swp_attack.c $LINK -o /tmp/native_swp_bench 2>> /tmp/nativeswp/remarks_on.txt
 
-          FUNCS='exp53_n2_vmstyle_u4_0381_frozen exp53_n2_native_default exp53_n2_native_swp_enable exp53_n2_native_swp_ii1 exp53_n2_native_swp_ii2 exp53_n2_native_swp_ii4 exp53_n2_native_interleave2 exp53_n2_native_interleave4'
+          FUNCS='exp53_n2_vmstyle_u4_0381_frozen exp53_n2_native_default exp53_n2_native_swp_disable exp53_n2_native_swp_ii1 exp53_n2_native_swp_ii2 exp53_n2_native_swp_ii4 exp53_n2_native_swp_ii8 exp53_n2_native_interleave2 exp53_n2_native_interleave4'
           for mode in on off; do
             obj=/tmp/native_${mode}.o
             for fn in $FUNCS; do

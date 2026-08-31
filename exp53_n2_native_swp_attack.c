@@ -1,11 +1,10 @@
 /* Compiler-native software-pipelining attack for the faithful n=2 EXP53 spine.
    Frozen baseline is included read-only and is not modified.
 
-   We duplicate the exact 32-input VM-style body and vary ONLY loop metadata:
-     - default/no hint
-     - clang software-pipeline enable
-     - software-pipeline enable with explicit II=1,2,4
-     - outer-loop interleave count 2 and 4
+   ICX 2026.1.1 supports pipeline(disable) and pipeline_initiation_interval(N),
+   but rejects upstream-Clang's newer pipeline(enable). Therefore the machine
+   pipeliner is enabled globally with -mllvm -enable-pipeliner=true and this
+   source varies only supported per-loop metadata.
 
    All arithmetic order, TAB128 anchors, reduction, ER-low correction and
    fused exponent scaling remain identical to exp53_n2_vmstyle_u4_0381_frozen.
@@ -13,12 +12,13 @@
 #include "exp53_n2_vmstyle_u4_0381_frozen.c"
 
 #define N2SWP_NONE
-#define N2SWP_ENABLE _Pragma("clang loop pipeline(enable)")
-#define N2SWP_II1    _Pragma("clang loop pipeline(enable)") _Pragma("clang loop pipeline_initiation_interval(1)")
-#define N2SWP_II2    _Pragma("clang loop pipeline(enable)") _Pragma("clang loop pipeline_initiation_interval(2)")
-#define N2SWP_II4    _Pragma("clang loop pipeline(enable)") _Pragma("clang loop pipeline_initiation_interval(4)")
-#define N2SWP_INT2   _Pragma("clang loop interleave_count(2)")
-#define N2SWP_INT4   _Pragma("clang loop interleave_count(4)")
+#define N2SWP_DISABLE _Pragma("clang loop pipeline(disable)")
+#define N2SWP_II1     _Pragma("clang loop pipeline_initiation_interval(1)")
+#define N2SWP_II2     _Pragma("clang loop pipeline_initiation_interval(2)")
+#define N2SWP_II4     _Pragma("clang loop pipeline_initiation_interval(4)")
+#define N2SWP_II8     _Pragma("clang loop pipeline_initiation_interval(8)")
+#define N2SWP_INT2    _Pragma("clang loop interleave_count(2)")
+#define N2SWP_INT4    _Pragma("clang loop interleave_count(4)")
 
 #define DEFINE_N2_SWP(NAME,HINT) \
 __attribute__((target("avx512f,avx512dq,fma"),noinline)) \
@@ -78,9 +78,10 @@ void NAME(double *restrict out,const double *restrict in,size_t n) \
 }
 
 DEFINE_N2_SWP(exp53_n2_native_default,N2SWP_NONE)
-DEFINE_N2_SWP(exp53_n2_native_swp_enable,N2SWP_ENABLE)
+DEFINE_N2_SWP(exp53_n2_native_swp_disable,N2SWP_DISABLE)
 DEFINE_N2_SWP(exp53_n2_native_swp_ii1,N2SWP_II1)
 DEFINE_N2_SWP(exp53_n2_native_swp_ii2,N2SWP_II2)
 DEFINE_N2_SWP(exp53_n2_native_swp_ii4,N2SWP_II4)
+DEFINE_N2_SWP(exp53_n2_native_swp_ii8,N2SWP_II8)
 DEFINE_N2_SWP(exp53_n2_native_interleave2,N2SWP_INT2)
 DEFINE_N2_SWP(exp53_n2_native_interleave4,N2SWP_INT4)
