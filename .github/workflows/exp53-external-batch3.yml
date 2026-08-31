@@ -12,7 +12,7 @@ permissions:
   contents: read
 jobs:
   bench:
-    timeout-minutes: 4
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +55,7 @@ jobs:
           AOCL=$(ldconfig -p | awk '/libalm.so|libamdlibm.so|libaocl.so/{print $NF;exit}')
           nm -D "$AOCL" | grep 'amd_vrda_exp' | head | tee -a /tmp/ext3.txt || true
           echo '=== BENCH ===' | tee -a /tmp/ext3.txt
-          /usr/bin/time -f 'WALL_SEC=%e USER_SEC=%U SYS_SEC=%S' /tmp/ext3 2>&1 | tee -a /tmp/ext3.txt
+          /usr/bin/time -f 'WALL_SEC=%e USER_SEC=%U SYS_SEC=%S' timeout --signal=TERM --kill-after=10s 240s /tmp/ext3 2>&1 | tee -a /tmp/ext3.txt
       - name: Upload
         if: steps.gate.outputs.eligible == '1'
         uses: actions/upload-artifact@v4
