@@ -6,12 +6,16 @@
    Production/frozen files are untouched.
 */
 #include "vectorclass.h"
+
+/* Frozen sources are C99 and use `restrict`; this TU is C++ for VCL. */
+#define restrict __restrict
 extern "C" {
 #include "exp53_n2_vmstyle_u4_0381_frozen.c"
 }
+#undef restrict
 
 extern "C" __attribute__((target("avx512f,avx512dq,fma"),noinline))
-void exp53_vcl_u2z_candidate(double *restrict out,const double *restrict in,size_t n){
+void exp53_vcl_u2z_candidate(double *__restrict out,const double *__restrict in,size_t n){
     const Vec8d inv(N2F_INV128),hi(N2F_L128_HI),mi(N2F_L128_MI),lo(N2F_L128_LO),
                 magic(N2F_MAGIC),one(1.0),nq1(N2F_Q1),nq2(N2F_Q2),nq3(N2F_Q3),nq4(N2F_Q4);
     const __m512i mb=_mm512_set1_epi64((long long)N2F_MAGIC_BITS),mask=_mm512_set1_epi64(127);
