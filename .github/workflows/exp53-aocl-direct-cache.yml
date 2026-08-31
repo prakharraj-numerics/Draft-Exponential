@@ -1,3 +1,4 @@
+# rerun 3: force Xeon shard after corrected AOCL pin
 name: EXP53 AOCL direct natural-exp cached
 on:
   push:
