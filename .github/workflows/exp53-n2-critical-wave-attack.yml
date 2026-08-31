@@ -1,0 +1,95 @@
+name: EXP53 n2 critical wave attack
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'exp53_n2_critical_wave_attack.c'
+      - 'bench_exp53_n2_critical_wave_attack.c'
+      - '.github/workflows/exp53-n2-critical-wave-attack.yml'
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Build and audit critical-wave candidates
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/critwave
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
+          echo "ICX=$($ICX --version | head -1)" | tee /tmp/critwave/build.txt
+          echo "COMMON=$COMMON" | tee -a /tmp/critwave/build.txt
+          "$ICX" $COMMON -c exp53_n2_critical_wave_attack.c -o /tmp/critwave.o
+          "$ICX" $COMMON -I"$MKLROOT/include" /tmp/critwave.o bench_exp53_n2_critical_wave_attack.c $LINK -o /tmp/critwave_bench
+          "$ICX" $COMMON -S exp53_n2_critical_wave_attack.c -o /tmp/critwave/critwave.s
+
+          FUNCS='exp53_n2_vmstyle_u4_0381_frozen exp53_n2_critical_u6_48 exp53_n2_critical_u8_64'
+          : > /tmp/critwave/static.txt
+          for fn in $FUNCS; do
+            F=/tmp/critwave/${fn}.asm
+            objdump --no-show-raw-insn -d -M intel --disassemble="$fn" /tmp/critwave.o > "$F"
+            ins=$(grep -Ec '^ *[0-9a-f]+:' "$F" || true)
+            gather=$(grep -Eci 'vgather|vpgather' "$F" || true)
+            fma=$(grep -Eci 'vfmadd|vfnmadd|vfmsub' "$F" || true)
+            mul=$(grep -Eci 'vmulpd' "$F" || true)
+            spill=$(grep -Eci 'vmov[^#]*\[rsp|\[rsp[^#]*zmm|zmm[^#]*\[rsp' "$F" || true)
+            zmm=$(grep -Eo 'zmm[0-9]+' "$F" | sort -u | wc -l)
+            branches=$(grep -Eci '\b(j[a-z]+|call|ret)\b' "$F" || true)
+            echo "CRITWAVE_STATIC fn=$fn ins=$ins gather=$gather fma=$fma mul=$mul zmm=$zmm vector_stack_refs=$spill branches=$branches" | tee -a /tmp/critwave/static.txt
+          done
+          cat /tmp/critwave/static.txt | tee -a /tmp/critwave/build.txt
+
+          if command -v llvm-mca >/dev/null 2>&1; then
+            llvm-mca --version > /tmp/critwave/llvm-mca-version.txt || true
+            llvm-mca -mcpu=graniterapids /tmp/critwave/critwave.s > /tmp/critwave/mca-graniterapids.txt 2>&1 || \
+              llvm-mca -mcpu=sapphirerapids /tmp/critwave/critwave.s > /tmp/critwave/mca-sapphirerapids.txt 2>&1 || true
+          fi
+
+      - name: Benchmark exact Xeon
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=/tmp/critwave/results.txt
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee "$OUT"
+          echo "SHARD=${{ matrix.shard }}" | tee -a "$OUT"
+          lscpu | egrep 'Model name|CPU MHz|BogoMIPS|L1d|L2|L3' | tee -a "$OUT" || true
+          cat /tmp/critwave/static.txt | tee -a "$OUT"
+          timeout 420s /tmp/critwave_bench 2>&1 | tee -a "$OUT"
+
+      - name: Upload
+        if: always() && steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-n2-critical-wave-${{ matrix.shard }}
+          path: /tmp/critwave
