@@ -62,22 +62,23 @@ jobs:
           ROOT=/home/runner/exp53-batch4-libs
           ICX=/opt/intel/oneapi/compiler/latest/bin/icx
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
-          CFLAGS='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
-          "$ICX" $CFLAGS -c exp53_n2_fused_u4_038_frozen.c -o /tmp/frozen.o
+          HOSTFLAGS='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
+          MIPPFLAGS='-O3 -mavx2 -mfma -mno-avx512f -fp-model=precise -fno-math-errno -DNDEBUG'
+          "$ICX" $HOSTFLAGS -c exp53_n2_fused_u4_038_frozen.c -o /tmp/frozen.o
           : > /tmp/compile_status.txt
           compile_one() {
-            name="$1"; macro="$2"; inc="$3"
+            name="$1"; flags="$2"; macro="$3"; inc="$4"
             echo "=== COMPILE $name ===" | tee -a /tmp/compile_status.txt
-            if "$ICPX" $CFLAGS -std=c++17 "$macro" $inc bench_exp53_batch4.cpp /tmp/frozen.o -lm -o "/tmp/b4_$name" >>/tmp/compile_status.txt 2>&1; then
+            if "$ICPX" $flags -std=c++17 "$macro" $inc bench_exp53_batch4.cpp /tmp/frozen.o -lm -o "/tmp/b4_$name" >>/tmp/compile_status.txt 2>&1; then
               echo "COMPILE_OK $name" | tee -a /tmp/compile_status.txt
             else
               echo "COMPILE_FAIL $name" | tee -a /tmp/compile_status.txt
             fi
           }
-          compile_one vcl   -DUSE_VCL   "-I$ROOT/vcl"
-          compile_one xsimd -DUSE_XSIMD "-I$ROOT/xsimd/include"
-          compile_one vdt   -DUSE_VDT   "-I$ROOT/vdt/include"
-          compile_one mipp  -DUSE_MIPP  "-I$ROOT/mipp/include"
+          compile_one vcl   "$HOSTFLAGS" -DUSE_VCL   "-I$ROOT/vcl"
+          compile_one xsimd "$HOSTFLAGS" -DUSE_XSIMD "-I$ROOT/xsimd/include"
+          compile_one vdt   "$HOSTFLAGS" -DUSE_VDT   "-I$ROOT/vdt/include"
+          compile_one mipp  "$MIPPFLAGS" -DUSE_MIPP  "-I$ROOT/mipp/include"
           cat /tmp/compile_status.txt
 
       - name: Run bounded benchmark
@@ -94,7 +95,7 @@ jobs:
             for n in vcl xsimd vdt mipp; do
               if [[ -x /tmp/b4_$n ]]; then
                 echo "=== RUN $n ==="
-                /tmp/b4_$n
+                /tmp/b4_$n || echo "RUN_FAIL $n exit=$?"
               else
                 echo "RUN_SKIP $n compile_failed"
               fi
@@ -102,7 +103,7 @@ jobs:
           ' 2>&1 | tee -a "$OUT"
 
       - name: Upload result
-        if: steps.cpu.outputs.eligible == '1'
+        if: always() && steps.cpu.outputs.eligible == '1'
         uses: actions/upload-artifact@v4
         with:
           name: exp53-batch4-${{ matrix.shard }}
