@@ -62,8 +62,6 @@ jobs:
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
           COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
           LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
-          # NT translation unit exports both the immutable frozen temporal symbol
-          # and the NT symbol referenced by the merged production wrapper.
           "$ICX" $COMMON -c exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/mid/nt.o
           "$ICPX" -std=c++17 $COMMON -I/tmp/fastflow -I"$MKLROOT/include" \
             bench_exp53_merged_midrange_vs_vml.cpp /tmp/mid/nt.o $LINK -pthread -o /tmp/mid/bench
@@ -74,23 +72,50 @@ jobs:
             lscpu | grep -E 'Model name|Socket|Core|Thread|NUMA|CPU\(s\)' || true
           } | tee /tmp/mid/build.txt
 
-      - name: Benchmark original FastFlow topology
+      - name: Benchmark isolated finished stacks
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         env:
           MKL_NUM_THREADS: '1'
         run: |
           set -euo pipefail
+          RAW=/tmp/mid/raw.txt
           OUT=/tmp/mid/results.txt
+          : > "$RAW"
           echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee "$OUT"
           echo "SHARD=${{ matrix.shard }}" | tee -a "$OUT"
           cat /tmp/mid/build.txt | tee -a "$OUT"
-          # Deliberately NO process-wide taskset: preserve validated FastFlow topology.
-          timeout 600s /tmp/mid/bench 2>&1 | tee -a "$OUT"
+          echo "ISOLATION=separate_process_lifetimes_no_FF_threads_during_VML" | tee -a "$OUT"
+          # Five independent process medians per method, with alternating process order.
+          # No process-wide taskset: preserve validated FastFlow topology.
+          for r in 1 2 3 4 5; do
+            if (( r % 2 )); then
+              timeout 120s /tmp/mid/bench ours | tee -a "$RAW"
+              timeout 120s /tmp/mid/bench vml  | tee -a "$RAW"
+            else
+              timeout 120s /tmp/mid/bench vml  | tee -a "$RAW"
+              timeout 120s /tmp/mid/bench ours | tee -a "$RAW"
+            fi
+          done
+          python3 - <<'PY' | tee -a "$OUT"
+          import re, statistics
+          from collections import defaultdict
+          d=defaultdict(list)
+          for line in open('/tmp/mid/raw.txt'):
+              m=re.search(r'METHOD (ours|vml) n=(\d+) calls=(\d+) ns=([0-9.]+)', line)
+              if m:
+                  d[(m.group(1),int(m.group(2)))].append(float(m.group(4)))
+          for n in [5000,8000,15000,25000,35000,50000,65000]:
+              a=d[('ours',n)]; v=d[('vml',n)]
+              if len(a)!=5 or len(v)!=5:
+                  raise SystemExit(f'missing samples n={n} ours={len(a)} vml={len(v)}')
+              mo=statistics.median(a); mv=statistics.median(v); ratio=mv/mo
+              print(f'FINAL n={n} ours_ff={mo:.9f} intel_vml_ha={mv:.9f} intel_over_ours={ratio:.6f} ours_adv_pct={(ratio-1)*100:.3f} ours_runs={a} vml_runs={v}')
+          PY
 
       - name: Upload
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/upload-artifact@v4
         with:
-          name: exp53-merged-mid-${{ matrix.shard }}
+          name: exp53-merged-mid-isolated-${{ matrix.shard }}
           path: /tmp/mid
