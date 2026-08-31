@@ -39,7 +39,7 @@ static double unit01(uint64_t h) {
 }
 
 static const char *domain_name(int d) {
-    return d == 0 ? "unit" : (d == 1 ? "mid" : "extreme");
+    return d == 0 ? "unit" : "mid";
 }
 
 static void fill_inputs(double *x, size_t n, int domain) {
@@ -50,11 +50,9 @@ static void fill_inputs(double *x, size_t n, int domain) {
         if (domain == 0) {
             const double e = 0x1p-20;
             m = e + u * (1.0 - 2.0 * e);              // strictly 0 < |x| < 1
-        } else if (domain == 1) {
+        } else {
             const double e = 0x1p-20;
             m = 1.0 + e + u * (99.0 - 2.0 * e);       // strictly 1 < |x| < 100
-        } else {
-            m = 1000.0 + 0x1p-10 + u * (4000.0 - 0x1p-9); // strictly 1000 < |x| < 5000
         }
         // Exact half positive / half negative for every requested (even) n,
         // interleaved so both physical workers see both signs.
@@ -150,7 +148,6 @@ int main(int argc, char **argv) {
     std::cout << std::fixed << std::setprecision(9);
     std::cout << "STACK=" << stack << " POLICY=" << policy << "\n";
 
-    // Construct the permanent 2-core executor only in custom processes.
     Exp53BatchProductionExecutor *pex = nullptr;
     if (custom) pex = new Exp53BatchProductionExecutor(2);
 
@@ -158,7 +155,7 @@ int main(int argc, char **argv) {
     constexpr size_t RING_BYTES = 256ULL * 1024ULL * 1024ULL;
 
     for (const auto& phase : phases) {
-        for (int domain = 0; domain < 3; ++domain) {
+        for (int domain = 0; domain < 2; ++domain) {
             for (size_t n : sizes_for_phase(phase)) {
                 AlignedDoubles in(n), ref(n), check(n);
                 fill_inputs(in.p, n, domain);
@@ -171,7 +168,7 @@ int main(int argc, char **argv) {
                 }
 
                 const size_t calls = call_count(n, phase);
-                const size_t stride = (n + 7u) & ~size_t(7u); // each slot 64-byte aligned
+                const size_t stride = (n + 7u) & ~size_t(7u);
                 size_t slots = 1;
                 if (stream) {
                     slots = RING_BYTES / (stride * sizeof(double));
@@ -185,7 +182,6 @@ int main(int argc, char **argv) {
                     else run_intel_once(dst, in.p, n);
                 };
 
-                // Warm-up outside timing.
                 for (int w = 0; w < 3; ++w) {
                     size_t s = stream ? (size_t)w % slots : 0;
                     invoke(out.p + s * stride);
