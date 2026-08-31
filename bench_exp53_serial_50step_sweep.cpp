@@ -11,8 +11,8 @@
 #include <vector>
 #include <mkl_vml.h>
 
-extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double *restrict out,
-                                                  const double *restrict in,
+extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double *out,
+                                                  const double *in,
                                                   size_t n);
 
 struct AlignedDoubles {
@@ -116,7 +116,7 @@ int main(int argc, char **argv) {
                 const double elapsed = std::chrono::duration<double,std::nano>(t1-t0).count();
                 samples.push_back(elapsed / ((double)calls * (double)n));
             }
-            sink += out[(n * 13u + (size_t)domain) % n] * 0x1p-1022;
+            sink += out.p[(n * 13u + (size_t)domain) % n] * 0x1p-1022;
             const double med = median(samples);
             std::cout << "RESULT stack=" << stack
                       << " domain=" << domain_name(domain)
