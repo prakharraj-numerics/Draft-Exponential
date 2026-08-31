@@ -5,11 +5,10 @@
    irregular sizes suffer because its inherited remainder path eventually
    uses scalar exp().
 
-   This candidate therefore keeps the frozen 32-input hot body unchanged and
-   replaces only the final 0..31 values with faithful AVX-512 vectors plus a
-   masked 1..7 tail. No mathematical approximation changes.
+   This TU includes the first pipeline attack so it owns exactly one copy of
+   the frozen baseline/constants and the PIPE3 candidate.
 */
-#include "exp53_n2_vmstyle_u4_0381_frozen.c"
+#include "exp53_n2_stream_pipeline_attack.c"
 
 static __attribute__((target("avx512f,avx512dq,fma"),always_inline)) inline
 __m512d n2arb_vec(__m512d x)
@@ -33,7 +32,6 @@ __m512d n2arb_vec(__m512d x)
     __m512i j=_mm512_and_epi64(kn,mask127);
     __m512i q=_mm512_srai_epi64(kn,7);
     __m512i tb=_mm512_i64gather_epi64(j,(const long long*)N2_FROZEN_TAB128,8);
-
     __m512d r=_mm512_fnmadd_pd(k,hi,x);
     r=_mm512_fnmadd_pd(k,mi,r);
     r=_mm512_fnmadd_pd(k,lo,r);
@@ -44,7 +42,6 @@ __m512d n2arb_vec(__m512d x)
     __m512d s=_mm512_mul_pd(h,h);
     __m512d er=_mm512_fmadd_pd(r,s,one);
     __m512d el=_mm512_fmadd_pd(r,s,_mm512_sub_pd(one,er));
-
     __m512i sb=_mm512_add_epi64(tb,_mm512_slli_epi64(q,52));
     __m512d scale=_mm512_castsi512_pd(sb);
     __m512d ph=_mm512_mul_pd(er,scale);
@@ -70,10 +67,6 @@ void exp53_n2_u4_masktail(double *restrict out,const double *restrict in,size_t 
     }
 }
 
-/* Dynamic production-shaped experiment: rolling PIPE3 only for small batches
-   where its lower setup/tail cost may win; otherwise use the proven u4 body
-   plus faithful masked tail. Thresholds are benchmark hypotheses, not frozen. */
-void exp53_n2_pipe3_stream(double*,const double*,size_t);
 __attribute__((target("avx512f,avx512dq,fma"),noinline))
 void exp53_n2_dynamic_batch(double *restrict out,const double *restrict in,size_t n)
 {
