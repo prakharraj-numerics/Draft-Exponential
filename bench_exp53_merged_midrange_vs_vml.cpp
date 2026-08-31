@@ -1,6 +1,4 @@
 #include <algorithm>
-#include <array>
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -76,49 +74,53 @@ static double measure_vml(double *out, const double *in,
     return (b - a) / ((double)calls * (double)n);
 }
 
-int main() {
+static int run_ours() {
     const size_t ns[] = {5000, 8000, 15000, 25000, 35000, 50000, 65000};
+    // The persistent FastFlow pool exists only in this OURS process.
     Exp53BatchProductionExecutor ex(2);
-
-    std::printf("MERGED_POLICY default=temporal_fastflow workers=2 intel=plain_VML_HA\n");
-
     for (size_t n : ns) {
         double *in = (double*)xalloc(n * sizeof(double));
-        double *ours = (double*)xalloc(n * sizeof(double));
-        double *vml = (double*)xalloc(n * sizeof(double));
+        double *out = (double*)xalloc(n * sizeof(double));
         for (size_t i = 0; i < n; ++i) in[i] = rd();
-
-        // Warm both methods and fully instantiate the persistent FastFlow pool.
-        for (int w = 0; w < 64; ++w) {
-            ex.run(ours, in, n);
-            vha(vml, in, n);
-        }
-
+        for (int w = 0; w < 64; ++w) ex.run(out, in, n);
         const int calls = calls_for(n);
-        std::vector<double> to, tv;
-        to.reserve(25);
-        tv.reserve(25);
-
-        // Alternate order to reduce drift/order bias.
-        for (int q = 0; q < 25; ++q) {
-            if ((q & 1) == 0) {
-                to.push_back(measure_ours(ex, ours, in, n, calls));
-                tv.push_back(measure_vml(vml, in, n, calls));
-            } else {
-                tv.push_back(measure_vml(vml, in, n, calls));
-                to.push_back(measure_ours(ex, ours, in, n, calls));
-            }
-        }
-
-        const double mo = median(to);
-        const double mv = median(tv);
-        std::printf("MERGED_VS_VML n=%zu calls=%d ours_ff=%.9f intel_vml_ha=%.9f intel_over_ours=%.6f ours_adv_pct=%.3f\n",
-                    n, calls, mo, mv, mv / mo, (mv / mo - 1.0) * 100.0);
-
+        std::vector<double> t;
+        t.reserve(25);
+        for (int q = 0; q < 25; ++q) t.push_back(measure_ours(ex, out, in, n, calls));
+        std::printf("METHOD ours n=%zu calls=%d ns=%.9f\n", n, calls, median(t));
         std::free(in);
-        std::free(ours);
-        std::free(vml);
+        std::free(out);
     }
+    return 0;
+}
 
-    return sink_value == 1234567.0;
+static int run_vml() {
+    const size_t ns[] = {5000, 8000, 15000, 25000, 35000, 50000, 65000};
+    // IMPORTANT: no Exp53BatchProductionExecutor is constructed in this process,
+    // so Intel is timed with zero FastFlow worker/spin threads alive.
+    for (size_t n : ns) {
+        double *in = (double*)xalloc(n * sizeof(double));
+        double *out = (double*)xalloc(n * sizeof(double));
+        for (size_t i = 0; i < n; ++i) in[i] = rd();
+        for (int w = 0; w < 64; ++w) vha(out, in, n);
+        const int calls = calls_for(n);
+        std::vector<double> t;
+        t.reserve(25);
+        for (int q = 0; q < 25; ++q) t.push_back(measure_vml(out, in, n, calls));
+        std::printf("METHOD vml n=%zu calls=%d ns=%.9f\n", n, calls, median(t));
+        std::free(in);
+        std::free(out);
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        std::fprintf(stderr, "usage: %s ours|vml\n", argv[0]);
+        return 2;
+    }
+    if (std::strcmp(argv[1], "ours") == 0) return run_ours();
+    if (std::strcmp(argv[1], "vml") == 0) return run_vml();
+    std::fprintf(stderr, "unknown mode: %s\n", argv[1]);
+    return 2;
 }
