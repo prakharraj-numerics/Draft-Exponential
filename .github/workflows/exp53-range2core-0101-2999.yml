@@ -1,0 +1,89 @@
+name: EXP53 101-2999 specialized two-core batching
+
+on:
+  push:
+    paths:
+      - 'exp53_range2core_0101_2999_candidates.hpp'
+      - 'bench_exp53_range2core_0101_2999.cpp'
+      - '.github/workflows/exp53-range2core-0101-2999.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact Xeon topology
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Build
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/r2c
+          CROOT=/opt/intel/oneapi/compiler/latest
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          "$CROOT/bin/icx" $COMMON -c exp53_small_u2z_0100_frozen.c -o /tmp/r2c/kernels.o
+          "$CROOT/bin/icpx" -std=c++17 $COMMON -I"$MKLROOT/include" bench_exp53_range2core_0101_2999.cpp /tmp/r2c/kernels.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -pthread -lm -ldl -o /tmp/r2c/bench
+          echo "HEAD=$(git rev-parse HEAD)" > /tmp/r2c/build.txt
+          echo "CANDIDATE_BLOB=$(git hash-object exp53_range2core_0101_2999_candidates.hpp)" >> /tmp/r2c/build.txt
+      - name: Benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          LD_LIBRARY_PATH: /opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/mkl/latest/lib
+          MKL_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          RAW=/tmp/r2c/raw.txt; OUT=/tmp/r2c/results.txt; : > "$RAW"
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee "$OUT"
+          echo "SHARD=${{ matrix.shard }}" | tee -a "$OUT"
+          cat /tmp/r2c/build.txt | tee -a "$OUT"
+          stacks=(cons bal agg custom2u2z u2z frozen intel)
+          for rep in 1 2 3 4 5; do
+            if (( rep % 2 )); then order=(cons bal agg custom2u2z u2z frozen intel); rev=0; else order=(intel frozen u2z custom2u2z agg bal cons); rev=1; fi
+            for s in "${order[@]}"; do SWEEP_REVERSE=$rev timeout 300s /tmp/r2c/bench "$s" | tee -a "$RAW"; done
+          done
+          python3 - <<'PY' | tee -a "$OUT"
+          import re,statistics
+          from collections import defaultdict
+          d=defaultdict(list)
+          p=re.compile(r'RESULT stack=(\w+) domain=(unit|mid) n=(\d+) ns=([0-9.]+)')
+          for line in open('/tmp/r2c/raw.txt'):
+              m=p.search(line)
+              if m:d[(m.group(1),m.group(2),int(m.group(3)))].append(float(m.group(4)))
+          stacks=['cons','bal','agg','custom2u2z','u2z','frozen','intel']
+          ns=list(range(101,2952,50))+[2999]
+          for dom in ('unit','mid'):
+              print('CATEGORY domain='+dom)
+              for n in ns:
+                  vals={s:statistics.median(d[(s,dom,n)]) for s in stacks}
+                  if any(len(d[(s,dom,n)])!=5 for s in stacks): raise SystemExit('missing reps')
+                  own=min(['cons','bal','agg','custom2u2z','u2z','frozen'],key=lambda s:vals[s])
+                  win=own if vals[own]<vals['intel'] else 'intel'
+                  print('FINAL domain=%s n=%d cons=%.9f bal=%.9f agg=%.9f custom2u2z=%.9f u2z=%.9f frozen=%.9f intel=%.9f best=%s winner=%s' % (dom,n,vals['cons'],vals['bal'],vals['agg'],vals['custom2u2z'],vals['u2z'],vals['frozen'],vals['intel'],own,win))
+          PY
+      - name: Upload
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-range2core-${{ matrix.shard }}
+          path: /tmp/r2c
