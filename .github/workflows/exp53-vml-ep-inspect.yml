@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'probe_vml_ha_ep_backend.c'
+      - 'probe_vml_mode_hot.c'
       - '.github/workflows/exp53-vml-ep-inspect.yml'
 
 jobs:
@@ -36,15 +37,16 @@ jobs:
           path: /opt/intel/oneapi
           key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
 
-      - name: Compile and inspect structural backend
+      - name: Inspect and sample HA vs EP
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
           ICX=/opt/intel/oneapi/compiler/latest/bin/icx
           LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           "$ICX" -O2 -xHost -I"$MKLROOT/include" probe_vml_ha_ep_backend.c $LINK -o /tmp/vml_probe
+          "$ICX" -O2 -xHost -I"$MKLROOT/include" probe_vml_mode_hot.c $LINK -o /tmp/vml_hot
           OUT=/tmp/vml_ep_inspect.txt
           echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" > "$OUT"
           echo "SHARD=${{ matrix.shard }}" >> "$OUT"
@@ -52,36 +54,32 @@ jobs:
           (LD_DEBUG=libs /tmp/vml_probe >/tmp/probe_stdout.txt 2>/tmp/lddebug.txt) || true
           grep -Eo '/[^ ]*libmkl[^ ]*\.so[^ ]*' /tmp/lddebug.txt | sed 's/[,:;]$//' | sort -u >> "$OUT" || true
           cat /tmp/probe_stdout.txt >> "$OUT"
-          echo '=== VML backend candidates ===' >> "$OUT"
-          find "$MKLROOT/lib" -maxdepth 1 -type f -o -type l | grep -E 'libmkl_vml.*\.so' | sort >> "$OUT" || true
-          echo '=== exp-like symbols with HA/EP naming ===' >> "$OUT"
-          for f in "$MKLROOT"/lib/libmkl_vml*.so* "$MKLROOT"/lib/libmkl_*.so*; do
-            [[ -e "$f" ]] || continue
-            syms=$(readelf -Ws "$f" 2>/dev/null | awk '{print $8}' | grep -Ei '(^|_)exp' | grep -Ei '(ha|ep|avx512|z0|z1|z2|z3|z4|z5|z6|z7|z8)' | sort -u | head -80 || true)
-            if [[ -n "$syms" ]]; then
-              echo "--- $f ---" >> "$OUT"
-              echo "$syms" >> "$OUT"
-            fi
-          done
-          echo '=== structural census for candidate exp symbols ===' >> "$OUT"
-          for f in "$MKLROOT"/lib/libmkl_vml*.so*; do
-            [[ -e "$f" ]] || continue
-            readelf -Ws "$f" 2>/dev/null | awk '{print $8}' | grep -Ei 'exp' | grep -Ei '(ha|ep|avx512)' | sort -u | head -30 | while read -r s; do
-              [[ -n "$s" ]] || continue
-              asm=$(objdump -d -M intel --disassemble="$s" "$f" 2>/dev/null || true)
-              ins=$(printf '%s\n' "$asm" | grep -Ec '^ *[0-9a-f]+:' || true)
-              [[ "$ins" -gt 0 ]] || continue
-              gather=$(printf '%s\n' "$asm" | grep -Eci 'vgather|vpgather' || true)
-              perm=$(printf '%s\n' "$asm" | grep -Eci 'vperm|vpermi|vpermt|vshuf|vpshuf' || true)
-              fma=$(printf '%s\n' "$asm" | grep -Eci 'vfmadd|vfnmadd|vfmsub|vfnmsub' || true)
-              mul=$(printf '%s\n' "$asm" | grep -Eci '\bvmulp[sd]\b|\bvmuls[sd]\b' || true)
-              add=$(printf '%s\n' "$asm" | grep -Eci '\bvaddp[sd]\b|\bvsubp[sd]\b|\bvaddsd\b|\bvsubsd\b' || true)
-              shifts=$(printf '%s\n' "$asm" | grep -Eci 'vps[lr][al][qd]|vpsll|vpsrl|vpsra' || true)
-              branches=$(printf '%s\n' "$asm" | grep -Eci '\bj[a-z]+\b|\bcall\b' || true)
-              zmm=$(printf '%s\n' "$asm" | grep -Eo 'zmm[0-9]+' | sort -u | wc -l)
-              printf 'CENSUS file=%s sym=%s ins=%s gather=%s perm=%s fma=%s mul=%s addsub=%s shifts=%s branches_calls=%s zmm=%s\n' "$(basename "$f")" "$s" "$ins" "$gather" "$perm" "$fma" "$mul" "$add" "$shifts" "$branches" "$zmm" >> "$OUT"
-            done
-          done
+          VML="$MKLROOT/lib/libmkl_vml_avx512.so.3"
+          echo "VML_BACKEND=$VML" >> "$OUT"
+          echo '=== dynamic exp-like symbols ===' >> "$OUT"
+          (objdump -T "$VML" 2>/dev/null | grep -Ei 'exp|vmd' | head -160) >> "$OUT" || true
+          echo '=== strings mentioning exp/accuracy ===' >> "$OUT"
+          (strings -a "$VML" | grep -Ei '(^|[^a-z])(exp|expm1).*(ha|ep|la)|(ha|ep|la).*(exp|expm1)' | head -120) >> "$OUT" || true
+
+          echo '=== software perf HA ===' >> "$OUT"
+          if perf record -q -e cpu-clock:u -F 999 -o /tmp/perf_ha.data -- /tmp/vml_hot HA >/tmp/ha.out 2>/tmp/ha.err; then
+            cat /tmp/ha.out >> "$OUT"
+            perf report -i /tmp/perf_ha.data --stdio --no-children --sort=dso,symbol --percent-limit 0.20 2>/dev/null | head -120 >> "$OUT" || true
+            echo '--- HA sample IPs in VML backend ---' >> "$OUT"
+            perf script -i /tmp/perf_ha.data -F ip,dso 2>/dev/null | grep 'libmkl_vml_avx512' | awk '{print $1}' | sort | uniq -c | sort -nr | head -40 >> "$OUT" || true
+          else
+            echo "PERF_HA_FAILED" >> "$OUT"; cat /tmp/ha.err >> "$OUT"
+          fi
+
+          echo '=== software perf EP ===' >> "$OUT"
+          if perf record -q -e cpu-clock:u -F 999 -o /tmp/perf_ep.data -- /tmp/vml_hot EP >/tmp/ep.out 2>/tmp/ep.err; then
+            cat /tmp/ep.out >> "$OUT"
+            perf report -i /tmp/perf_ep.data --stdio --no-children --sort=dso,symbol --percent-limit 0.20 2>/dev/null | head -120 >> "$OUT" || true
+            echo '--- EP sample IPs in VML backend ---' >> "$OUT"
+            perf script -i /tmp/perf_ep.data -F ip,dso 2>/dev/null | grep 'libmkl_vml_avx512' | awk '{print $1}' | sort | uniq -c | sort -nr | head -40 >> "$OUT" || true
+          else
+            echo "PERF_EP_FAILED" >> "$OUT"; cat /tmp/ep.err >> "$OUT"
+          fi
           cat "$OUT"
 
       - name: Upload inspection
