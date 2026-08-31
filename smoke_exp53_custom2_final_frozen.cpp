@@ -12,7 +12,7 @@ static uint64_t mix64(uint64_t x) {
 }
 
 int main() {
-    const size_t sizes[] = {50, 100, 250, 1000, 3000, 65000, 1000000};
+    const size_t sizes[] = {50, 100, 250, 1000, 1999, 2000, 2149, 2150, 2849, 2850, 3000, 3001, 65000, 1000000};
     const size_t maxn = 1000000;
     double *in=nullptr, *ref=nullptr, *out=nullptr;
     if (posix_memalign((void**)&in, 64, maxn*sizeof(double)) ||
