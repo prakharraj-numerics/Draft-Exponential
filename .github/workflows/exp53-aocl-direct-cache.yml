@@ -1,0 +1,115 @@
+name: EXP53 AOCL direct natural-exp cached
+on:
+  push:
+    paths:
+      - 'bench_exp53_aocl_direct.c'
+      - 'exp53_n2_fused_u4_038_frozen.c'
+      - '.github/workflows/exp53-aocl-direct-cache.yml'
+  workflow_dispatch:
+concurrency:
+  group: exp53-aocl-direct-cache
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  bench:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    runs-on: ubuntu-24.04
+    env:
+      AOCL_SHA: 82fbd72c0d1d6e00472438ce1a1cfbf0462a896d
+      AOCL_SRC: /home/runner/.cache/aocl-libm-ose-src
+      AOCL_BUILD: /home/runner/.cache/aocl-libm-ose-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate Xeon 6973P-C
+        id: gate
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Cache AOCL LibM build
+        if: steps.gate.outputs.eligible == '1'
+        id: aoclcache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /home/runner/.cache/aocl-libm-ose-src
+            /home/runner/.cache/aocl-libm-ose-build
+          key: aocl-libm-ose-${{ runner.os }}-x86_64-${{ env.AOCL_SHA }}-gcc-${{ hashFiles('.github/workflows/exp53-aocl-direct-cache.yml') }}
+          restore-keys: |
+            aocl-libm-ose-${{ runner.os }}-x86_64-${{ env.AOCL_SHA }}-gcc-
+
+      - name: Install build tools
+        if: steps.gate.outputs.eligible == '1'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git
+
+      - name: Restore or build pinned AOCL LibM
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$AOCL_SRC/.git" ]]; then
+            rm -rf "$AOCL_SRC"
+            git clone https://github.com/amd/aocl-libm-ose.git "$AOCL_SRC"
+          fi
+          git -C "$AOCL_SRC" fetch --depth=1 origin "$AOCL_SHA"
+          git -C "$AOCL_SRC" checkout --detach "$AOCL_SHA"
+          if ! find "$AOCL_BUILD" -type f \( -name 'libalm.so*' -o -name 'libamdlibm.so*' -o -name 'libaocl.so*' \) -print -quit 2>/dev/null | grep -q .; then
+            rm -rf "$AOCL_BUILD"
+            cmake -S "$AOCL_SRC" -B "$AOCL_BUILD" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DLIBM_BUILD_TESTS=OFF \
+              -DLIBM_BUILD_EXAMPLES=OFF
+            cmake --build "$AOCL_BUILD" -j2
+          fi
+          LIB=$(find "$AOCL_BUILD" -type f \( -name 'libalm.so*' -o -name 'libamdlibm.so*' -o -name 'libaocl.so*' \) | head -1)
+          test -n "$LIB"
+          sudo cp -L "$LIB" /usr/local/lib/$(basename "$LIB")
+          sudo ldconfig
+          echo "AOCL_CACHE_HIT=${{ steps.aoclcache.outputs.cache-hit }}"
+          echo "AOCL_LIB=$LIB"
+
+      - name: Inspect natural-exp symbols
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          AOCL=$(ldconfig -p | awk '/libalm.so|libamdlibm.so|libaocl.so/{print $NF;exit}')
+          echo "AOCL_RUNTIME=$AOCL" | tee /tmp/aocl_direct.txt
+          echo '=== EXPORTED EXP SYMBOLS ===' | tee -a /tmp/aocl_direct.txt
+          nm -D "$AOCL" | grep -Ei '(^|[[:space:]])[^[:space:]]*exp([^0-9]|$)' | grep -v -E 'exp2|exp10|expm1' | head -200 | tee -a /tmp/aocl_direct.txt || true
+          echo '=== ALL amd_vrda_exp* ===' | tee -a /tmp/aocl_direct.txt
+          nm -D "$AOCL" | grep 'amd_vrda_exp' | tee -a /tmp/aocl_direct.txt || true
+
+      - name: Build and benchmark AOCL direct paths
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: |
+          set -euo pipefail
+          gcc -O3 -march=native -mtune=native -ffp-contract=fast -fno-math-errno -DNDEBUG \
+            bench_exp53_aocl_direct.c exp53_n2_fused_u4_038_frozen.c -ldl -lm -o /tmp/aocl_direct
+          echo '=== BENCH ===' | tee -a /tmp/aocl_direct.txt
+          /usr/bin/time -f 'WALL_SEC=%e USER_SEC=%U SYS_SEC=%S' \
+            timeout --signal=TERM --kill-after=10s 300s /tmp/aocl_direct 2>&1 | tee -a /tmp/aocl_direct.txt
+
+      - name: Upload
+        if: steps.gate.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-aocl-direct-cache-${{ matrix.shard }}
+          path: /tmp/aocl_direct.txt
