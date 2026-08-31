@@ -61,10 +61,12 @@ jobs:
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
           COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
           LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
-          "$ICX" $COMMON -c exp53_n2_vmstyle_u4_0381_frozen.c -o /tmp/tri/frozen.o
+          # The NT translation unit intentionally includes/exports the frozen
+          # temporal symbols as well, so link only this object to avoid duplicate
+          # definitions while benchmarking both entry points side by side.
           "$ICX" $COMMON -c exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/tri/nt.o
           "$ICPX" -std=c++17 $COMMON -I/tmp/fastflow -I"$MKLROOT/include" \
-            bench_exp53_ff_nt_vs_plain_vml.cpp /tmp/tri/frozen.o /tmp/tri/nt.o $LINK -pthread -o /tmp/tri/bench
+            bench_exp53_ff_nt_vs_plain_vml.cpp /tmp/tri/nt.o $LINK -pthread -o /tmp/tri/bench
           objdump -d -Mintel /tmp/tri/nt.o > /tmp/tri/nt.asm
           {
             echo "ICX=$($ICX --version | head -1)"
