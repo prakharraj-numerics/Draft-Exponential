@@ -6,7 +6,7 @@
      n <= 3000:
        frozen serial temporal kernel only.
        No custom 2-core dispatch and no NT stores, even if the caller requests
-       StreamingWriteOnce.  At this scale fixed parallel/NT overhead loses.
+       StreamingWriteOnce.
 
      n > 3000, default/common case:
        custom permanent 2-core dispatcher over the immutable temporal kernel.
@@ -15,6 +15,8 @@
        the same custom dispatcher over the NT-store kernel.
 
    IMPORTANT:
+   - The custom runtime is constructed lazily on the first n>3000 parallel
+     call.  A workload that stays at n<=3000 never creates the helper thread.
    - The 3000 cutoff selects serial vs custom dispatch; it does NOT auto-select
      NT above the cutoff.  For n > 3000 caller semantics still decide the store
      policy.
@@ -27,6 +29,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include "exp53_batch_custom_2core_nt_frozen.hpp"
 
 enum class Exp53OutputPolicy {
@@ -43,10 +46,11 @@ public:
 
     /* Common/default API: serial temporal through 3K, custom temporal above. */
     void run(double *out, const double *in, size_t n, long workers = 2) {
-        if (n <= kSerialTemporalMaxN || max_workers_ <= 1 || workers <= 1)
+        if (n <= kSerialTemporalMaxN || max_workers_ <= 1 || workers <= 1) {
             exp53_n2_vmstyle_u4_0381_frozen(out, in, n);
-        else
-            frozen_.run(out, in, n);
+        } else {
+            custom().run(out, in, n);
+        }
     }
 
     /* Explicit rare API: still forced to serial temporal through 3K. */
@@ -57,7 +61,7 @@ public:
         } else if (max_workers_ <= 1 || workers <= 1) {
             exp53_n2_vmstyle_u4_0381_nt_sfence(out, in, n);
         } else {
-            frozen_.run_streaming_write_once(out, in, n);
+            custom().run_streaming_write_once(out, in, n);
         }
     }
 
@@ -71,6 +75,12 @@ public:
     }
 
 private:
+    Exp53CustomPermanent2CoreFrozen& custom() {
+        if (!frozen_)
+            frozen_ = std::make_unique<Exp53CustomPermanent2CoreFrozen>();
+        return *frozen_;
+    }
+
     long max_workers_;
-    Exp53CustomPermanent2CoreFrozen frozen_;
+    std::unique_ptr<Exp53CustomPermanent2CoreFrozen> frozen_;
 };
