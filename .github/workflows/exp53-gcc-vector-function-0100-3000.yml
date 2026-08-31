@@ -38,7 +38,9 @@ jobs:
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
           GCCFLAGS='-O3 -march=native -mtune=native -fopenmp-simd -fvect-cost-model=unlimited -fno-math-errno -fno-trapping-math -ffp-contract=fast -DNDEBUG'
           g++ --version | head -1
-          gcc $GCCFLAGS -fopt-info-vec-optimized=/tmp/vectorized.txt -fopt-info-vec-missed=/tmp/missed.txt -c exp53_gcc_vector_0100_3000.c -o /tmp/gccvec.o
+          gcc $GCCFLAGS -fopt-info-vec-all=/tmp/vector-all.txt -c exp53_gcc_vector_0100_3000.c -o /tmp/gccvec.o
+          grep 'optimized:' /tmp/vector-all.txt > /tmp/vectorized.txt || true
+          grep 'missed:' /tmp/vector-all.txt > /tmp/missed.txt || true
           LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           "$ICPX" -std=c++17 -O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -I"$MKLROOT/include" bench_exp53_custom2_gcc_vector_0100_3000.cpp /tmp/gccvec.o $LINK -pthread -o /tmp/bench
           { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "GCC=$(gcc --version | head -1)"; echo "HEAD=$(git rev-parse HEAD)"; echo '=== VECTORIZED ==='; cat /tmp/vectorized.txt; echo '=== MISSED ==='; cat /tmp/missed.txt; } | tee /tmp/meta.txt
@@ -62,5 +64,6 @@ jobs:
           name: exp53-gcc-vector-${{ matrix.shard }}
           path: |
             /tmp/result.txt
+            /tmp/vector-all.txt
             /tmp/vectorized.txt
             /tmp/missed.txt
