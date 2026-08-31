@@ -6,9 +6,9 @@
    plus one final _mm_sfence() for function-return ordering semantics.
 
    Production-safe alignment handling:
-   - if out is not 64-byte aligned, a short temporal prefix is computed by the
-     frozen function until the remaining output pointer is 64-byte aligned;
-   - full 32-value blocks then use streaming stores;
+   - 64-byte-aligned output uses streaming stores for full 32-value blocks;
+   - non-64-byte-aligned output falls back completely to the frozen temporal
+     kernel, preserving the exact vector grouping and bit-identical result;
    - one SFENCE is issued after the NT block sequence;
    - the final remainder uses the frozen temporal implementation.
 */
@@ -21,21 +21,9 @@ void exp53_n2_vmstyle_u4_0381_nt_sfence(double *restrict out,
                                         size_t n)
 {
     if (!n) return;
-
-    uintptr_t a=(uintptr_t)out;
-    if ((a & 7u) != 0u) {
+    if (((uintptr_t)out & 63u) != 0u) {
         exp53_n2_vmstyle_u4_0381_frozen(out,in,n);
         return;
-    }
-
-    size_t prefix=0;
-    const size_t mis=(size_t)(a & 63u);
-    if (mis) {
-        prefix=(64u-mis)/sizeof(double);
-        if (prefix>n) prefix=n;
-        exp53_n2_vmstyle_u4_0381_frozen(out,in,prefix);
-        out+=prefix; in+=prefix; n-=prefix;
-        if (!n) return;
     }
 
     const __m512d inv=_mm512_set1_pd(N2F_INV128),
