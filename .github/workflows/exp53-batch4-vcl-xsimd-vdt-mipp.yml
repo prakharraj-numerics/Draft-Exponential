@@ -1,6 +1,9 @@
 name: EXP53 batch4 VCL xsimd VDT MIPP
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/exp53-batch4-vcl-xsimd-vdt-mipp.yml'
 
 jobs:
   bench:
