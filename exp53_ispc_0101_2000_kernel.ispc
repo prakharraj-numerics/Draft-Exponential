@@ -1,7 +1,7 @@
 // Experimental ISPC backend for the frozen EXP53 mathematical machinery.
 // No ISPC exp() or replacement transcendental math is used.
 // Targeted at avx512skx-x8; processes four gangs (32 doubles) per uniform loop iteration.
-// ISPC/LLVM may contract each multiply+add expression to FMA; the bitwise gate verifies fidelity.
+// Exact fused operations are forced with LLVM fma intrinsics; bitwise gate remains mandatory.
 
 static const uniform double INV128  = 0x1.71547652b82fep+7;
 static const uniform double L128_HI = 0x1.62e42fefa39efp-8;
@@ -14,6 +14,11 @@ static const uniform double Q2 = 0x1.aaaaaaaaaaaabp-5;
 static const uniform double Q3 = 0x1.0000000000000p-7;
 static const uniform double Q4 = 0x1.c16c16c16c16cp-11;
 
+inline varying double vfma(varying double a, varying double b, varying double c)
+{
+    return @llvm.fma.v8f64(a, b, c);
+}
+
 inline void lane8(uniform double * uniform out,
                   uniform const double * uniform src,
                   uniform const uint64 * uniform tab_bits,
@@ -21,29 +26,29 @@ inline void lane8(uniform double * uniform out,
 {
     varying int idx = base + programIndex;
     varying double x = src[idx];
-    varying double biased = x * INV128 + MAGIC;
+    varying double biased = vfma(x, INV128, MAGIC);
     varying double k = biased - MAGIC;
     varying int64 kn = (int64)intbits(biased) - (int64)MAGIC_BITS;
     varying int64 j = kn & 127;
     varying int64 q = kn >> 7;
 
-    varying double r = (-k) * L128_HI + x;
-    r = (-k) * L128_MI + r;
-    r = (-k) * L128_LO + r;
+    varying double r = vfma(-k, L128_HI, x);
+    r = vfma(-k, L128_MI, r);
+    r = vfma(-k, L128_LO, r);
 
     varying uint64 tb = tab_bits[j];
     varying uint64 sb = tb + (((uint64)q) << 52);
     varying double scale = doublebits(sb);
 
-    varying double h = Q4 * r + Q3;
-    h = h * r + Q2;
-    h = h * r + Q1;
-    h = h * r + 1.0;
+    varying double h = vfma(Q4, r, Q3);
+    h = vfma(h, r, Q2);
+    h = vfma(h, r, Q1);
+    h = vfma(h, r, 1.0);
     varying double s = h * h;
-    varying double er = r * s + 1.0;
-    varying double el = r * s + (1.0 - er);
+    varying double er = vfma(r, s, 1.0);
+    varying double el = vfma(r, s, 1.0 - er);
     varying double ph = er * scale;
-    varying double y = el * scale + ph;
+    varying double y = vfma(el, scale, ph);
     out[idx] = y;
 }
 
