@@ -83,3 +83,4 @@ jobs:
           path: |
             /tmp/hw_all.txt
             /tmp/hw_asm.tgz
+# fresh-run-trigger: 2026-08-31T00:08
