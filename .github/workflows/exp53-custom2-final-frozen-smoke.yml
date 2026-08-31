@@ -5,6 +5,7 @@ on:
     paths:
       - 'exp53_batch_custom_2core_nt_frozen.hpp'
       - 'exp53_batch_production.hpp'
+      - 'exp53_small_u2z_0100_frozen.c'
       - 'smoke_exp53_custom2_final_frozen.cpp'
       - '.github/workflows/exp53-custom2-final-frozen-smoke.yml'
   workflow_dispatch:
@@ -49,9 +50,11 @@ jobs:
           ICX=/opt/intel/oneapi/compiler/latest/bin/icx
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
           COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
-          "$ICX" $COMMON -c exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/nt.o
-          "$ICPX" -std=c++17 $COMMON smoke_exp53_custom2_final_frozen.cpp /tmp/nt.o -pthread -lm -o /tmp/final_smoke
+          "$ICX" $COMMON -c exp53_small_u2z_0100_frozen.c -o /tmp/prod_kernels.o
+          "$ICPX" -std=c++17 $COMMON smoke_exp53_custom2_final_frozen.cpp /tmp/prod_kernels.o -pthread -lm -o /tmp/final_smoke
           echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
           echo "SHARD=${{ matrix.shard }}"
           echo "HEAD=$(git rev-parse HEAD)"
+          echo "U2Z_FROZEN_BLOB=$(git hash-object exp53_small_u2z_0100_frozen.c)"
+          echo "PRODUCTION_BLOB=$(git hash-object exp53_batch_production.hpp)"
           /tmp/final_smoke
