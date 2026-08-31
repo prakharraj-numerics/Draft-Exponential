@@ -46,10 +46,11 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/omp50
           MKLROOT=/opt/intel/oneapi/mkl/latest
-          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
-          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          COMPILERROOT=/opt/intel/oneapi/compiler/latest
+          ICX=$COMPILERROOT/bin/icx
+          ICPX=$COMPILERROOT/bin/icpx
           COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
-          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
+          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,-rpath,$COMPILERROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           "$ICX" $COMMON -c exp53_n2_vmstyle_u4_0381_frozen.c -o /tmp/omp50/frozen.o
           "$ICPX" -std=c++17 $COMMON -qopenmp -I"$MKLROOT/include" \
             bench_exp53_intel_omp_50step_sweep.cpp /tmp/omp50/frozen.o $LINK \
@@ -59,6 +60,7 @@ jobs:
             echo "HEAD=$(git rev-parse HEAD)"
             echo "FROZEN_SERIAL_BLOB=$(git hash-object exp53_n2_vmstyle_u4_0381_frozen.c)"
             echo "OMP_ENV=OMP_NUM_THREADS=2 OMP_WAIT_POLICY=ACTIVE KMP_BLOCKTIME=infinite KMP_HOT_TEAMS_MODE=1 OMP_PROC_BIND=spread OMP_PLACES=cores"
+            echo "IOMP_RPATH=$COMPILERROOT/lib"
             lscpu | grep -E 'Model name|Socket|Core|Thread|NUMA|CPU\(s\)' || true
           } | tee /tmp/omp50/build.txt
 
@@ -66,6 +68,7 @@ jobs:
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         env:
+          LD_LIBRARY_PATH: /opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/mkl/latest/lib
           OMP_NUM_THREADS: '2'
           OMP_DYNAMIC: 'FALSE'
           OMP_WAIT_POLICY: ACTIVE
