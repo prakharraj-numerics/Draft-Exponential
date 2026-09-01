@@ -2,23 +2,24 @@
 
 /* Minimal process-map composition for EXP53 small/mid batches.
 
-   Deliberately contains NO scheduler, thread pool, partitioning layer, or
-   library representation boundary.  The exact-Xeon process map only supplied
-   three robust arithmetic conclusions that compose safely inside one AVX-512
-   register pipeline:
-     * native AVX-512 index generation
-     * square as vmulpd (the operation underlying the Turbo winner)
-     * final repair as vfmadd (the operation underlying the Highway winner)
+   NO scheduler, thread pool, partitioning layer, or library representation
+   boundary. The process map contributes only operations that compose inside
+   one AVX-512 register pipeline.
 
-   Everything else keeps the frozen EXP53 mathematical machinery and operation
-   order.  This file is an experimental candidate, not production routing.
+   Correctness note: the frozen VM-style baseline processes only complete
+   32-value blocks with AVX-512 and delegates the remainder to the older frozen
+   kernel, whose <32 path is scalar exp(). We preserve that exact tail policy;
+   vectorizing the remainder was the sole source of prior bitdiffs.
 */
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <immintrin.h>
 #include "exp53_highway_sync_1600_3000_constants_frozen.hpp"
+
+extern "C" void exp53_n2_fused_u4_038_frozen(double *out,
+                                               const double *in,
+                                               size_t n);
 
 namespace exp53_minimal_fused_0100_1400 {
 namespace c = exp53_hwy_const_frozen;
@@ -75,14 +76,8 @@ static inline void run(double* out, const double* in, size_t n) {
         vec8(out + i + 16, in + i + 16);
         vec8(out + i + 24, in + i + 24);
     }
-    for (; i + 8 <= n; i += 8) vec8(out + i, in + i);
     if (i < n) {
-        alignas(64) double ti[8] = {0,0,0,0,0,0,0,0};
-        alignas(64) double to[8];
-        const size_t rem = n - i;
-        std::memcpy(ti, in + i, rem * sizeof(double));
-        vec8(to, ti);
-        std::memcpy(out + i, to, rem * sizeof(double));
+        exp53_n2_fused_u4_038_frozen(out + i, in + i, n - i);
     }
 }
 
