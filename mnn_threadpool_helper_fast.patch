@@ -1,0 +1,42 @@
+diff --git a/source/backend/cpu/ThreadPool.hpp b/source/backend/cpu/ThreadPool.hpp
+index 9d57ef4..0000000 100644
+--- a/source/backend/cpu/ThreadPool.hpp
++++ b/source/backend/cpu/ThreadPool.hpp
+@@ -26,6 +26,8 @@ public:
+     void enqueue(TASK* task, int index);
++    void enqueueHelperOnly(TASK* task, int index);
++    void waitHelperOnly(int index);
+ 
+     void active();
+     void deactive();
+diff --git a/source/backend/cpu/ThreadPool.cpp b/source/backend/cpu/ThreadPool.cpp
+index 75a42da..0000000 100644
+--- a/source/backend/cpu/ThreadPool.cpp
++++ b/source/backend/cpu/ThreadPool.cpp
+@@ -101,6 +101,25 @@ void ThreadPool::enqueue(TASK* taskp, int index) {
+     enqueueInternal(taskp, index);
+ }
++
++void ThreadPool::enqueueHelperOnly(TASK* taskp, int index) {
++    if (index < 0 || mNumberThread < 2 || mActiveCount == 0) {
++        taskp->first(1);
++        return;
++    }
++    mTasks[index].first = taskp;
++    *mTasks[index].second[1] = true;
++}
++
++void ThreadPool::waitHelperOnly(int index) {
++    if (index < 0 || mNumberThread < 2 || mActiveCount == 0) {
++        return;
++    }
++    while (*mTasks[index].second[1]) {
++#if defined(__x86_64__) || defined(__i386__)
++        __asm__ __volatile__("pause" ::: "memory");
++#else
++        std::this_thread::yield();
++#endif
++    }
++}
++
+ void ThreadPool::enqueueInternal(TASK* taskp, int index) {
