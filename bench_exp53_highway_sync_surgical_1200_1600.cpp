@@ -17,7 +17,6 @@ extern "C" void exp53_highway_fixedtail_0101_2000_candidate(double*,const double
 extern "C" void* exp53_hwy2_surg_create();
 extern "C" void exp53_hwy2_surg_destroy(void*);
 extern "C" void exp53_hwy2_surg_run(void*,double*,const double*,size_t,int);
-extern "C" void exp53_highway_fixedtail_surg_1200_1600(double*,const double*,size_t);
 
 struct B{double*p;B(size_t n){if(posix_memalign((void**)&p,64,n*sizeof(double)))std::abort();}~B(){free(p);}};
 static uint64_t sm(uint64_t x){x+=0x9e3779b97f4a7c15ULL;x=(x^(x>>30))*0xbf58476d1ce4e5b9ULL;x=(x^(x>>27))*0x94d049bb133111ebULL;return x^(x>>31);}static double ur(uint64_t h){return((double)(h>>11)+.5)/9007199254740992.;}
@@ -37,7 +36,11 @@ int main(){
     for(size_t n:sizes){
       fill(in.p,n,d);
       exp53_highway_fixedtail_0101_2000_candidate(ref.p,in.p,n);
-      exp53_highway_fixedtail_surg_1200_1600(surg.p,in.p,n);
+      {
+        void* ex=exp53_hwy2_surg_create();
+        exp53_hwy2_surg_run(ex,surg.p,in.p,n,32);
+        exp53_hwy2_surg_destroy(ex);
+      }
       uint64_t maxu=0; size_t gt1=0,bitdiff=0;
       for(size_t i=0;i<n;i++){uint64_t u=ulp(surg.p[i],std::exp(in.p[i]));if(u>maxu)maxu=u;if(u>1)gt1++;if(std::memcmp(surg.p+i,ref.p+i,8))bitdiff++;}
       size_t c=calls(n);
