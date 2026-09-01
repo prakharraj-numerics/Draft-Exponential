@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -11,7 +10,7 @@
 
 extern "C" void* exp53_xnnpack_create(size_t threads);
 extern "C" void exp53_xnnpack_destroy(void* pool);
-extern "C" void exp53_xnnpack_run(void* pool, double* out, const double* in, size_t n, size_t tile);
+extern "C" void exp53_xnnpack_run_mode(void* pool, double* out, const double* in, size_t n, size_t tile, int mode);
 extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double* out, const double* in, size_t n);
 
 struct Buffer {
@@ -75,7 +74,7 @@ int main() {
   if (pool1 == nullptr || pool2 == nullptr) return 3;
 
   std::cout << std::fixed << std::setprecision(9)
-            << "XNNPACK_INTERNAL_FP64 frozen_math pthreadpool\n";
+            << "XNNPACK_INTERNAL_FP64 fastpath_sweep frozen_math\n";
 
   for (int domain = 0; domain < 2; ++domain) {
     const bool mid = domain != 0;
@@ -87,22 +86,29 @@ int main() {
       double best = 1.0e99;
       size_t best_tile = 0;
       int best_threads = 0;
+      int best_mode = -1;
       size_t max_bitdiff = 0;
 
       for (int threads = 1; threads <= 2; ++threads) {
         void* pool = threads == 1 ? pool1 : pool2;
-        for (size_t tile : tiles) {
-          exp53_xnnpack_run(pool, out.p, in.p, n, tile);
-          size_t bitdiff = 0;
-          for (size_t i = 0; i < n; ++i) {
-            if (std::memcmp(out.p + i, frozen.p + i, sizeof(double)) != 0) ++bitdiff;
-          }
-          max_bitdiff = std::max(max_bitdiff, bitdiff);
-          const double t = time_ns_per_input([&]{ exp53_xnnpack_run(pool, out.p, in.p, n, tile); }, n, calls);
-          if (t < best) {
-            best = t;
-            best_tile = tile;
-            best_threads = threads;
+        for (int mode = 0; mode < 4; ++mode) {
+          const size_t tile_count = mode >= 2 ? 1 : sizeof(tiles) / sizeof(tiles[0]);
+          for (size_t ti = 0; ti < tile_count; ++ti) {
+            const size_t tile = mode >= 2 ? 256 : tiles[ti];
+            exp53_xnnpack_run_mode(pool, out.p, in.p, n, tile, mode);
+            size_t bitdiff = 0;
+            for (size_t i = 0; i < n; ++i) {
+              if (std::memcmp(out.p + i, frozen.p + i, sizeof(double)) != 0) ++bitdiff;
+            }
+            max_bitdiff = std::max(max_bitdiff, bitdiff);
+            if (bitdiff != 0) continue;
+            const double t = time_ns_per_input([&]{ exp53_xnnpack_run_mode(pool, out.p, in.p, n, tile, mode); }, n, calls);
+            if (t < best) {
+              best = t;
+              best_tile = tile;
+              best_threads = threads;
+              best_mode = mode;
+            }
           }
         }
       }
@@ -113,6 +119,7 @@ int main() {
                 << " n=" << n
                 << " xnn_ns=" << best
                 << " threads=" << best_threads
+                << " mode=" << best_mode
                 << " tile=" << best_tile
                 << " frozen_ns=" << frozen_ns
                 << " intel_ns=" << intel_ns
