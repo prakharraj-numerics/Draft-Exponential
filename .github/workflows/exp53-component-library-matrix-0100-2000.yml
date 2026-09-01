@@ -1,0 +1,295 @@
+name: EXP53 Component Library Matrix 100-2000 Xeon
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/exp53-component-library-matrix-0100-2000.yml'
+      - 'exp53_turbo_0101_2000_candidate.cpp'
+      - 'exp53_highway_0101_2000_candidate.cpp'
+      - 'exp53_highway_sync_1400_3000_frozen.hpp'
+      - 'exp53_fastflow_batch_2core_frozen.hpp'
+      - 'exp53_batch_custom_2core_nt_frozen.hpp'
+      - 'exp53_xnnpack_internal_0101_1400_candidate.cpp'
+      - 'exp53_n2_vmstyle_u4_0381_frozen.c'
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] \
+             && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f \
+             && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Fetch pinned dependencies
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/gottingen/turbo.git /tmp/turbo
+          git -C /tmp/turbo checkout 9b212dedfaa4d4e08a854776e1ddaca7d746444c
+
+          git clone --filter=blob:none https://github.com/google/highway.git /tmp/highway
+          git -C /tmp/highway checkout 2607d3b5b0113992fe84d3848859eae13b3b52c1
+
+          git clone --filter=blob:none https://github.com/fastflow/fastflow.git /tmp/fastflow
+          git -C /tmp/fastflow checkout d476f66ab924d8d122f54b4b90aee00ef979aea8
+
+          git clone --filter=blob:none https://github.com/google/XNNPACK.git /tmp/xnnpack
+          git -C /tmp/xnnpack checkout b9b1cec0d2c62f1c3c0e1a590f4a42ddab309719
+
+      - name: Build XNNPACK pthreadpool
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S /tmp/xnnpack -B /tmp/xnn-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DXNNPACK_BUILD_TESTS=OFF \
+            -DXNNPACK_BUILD_BENCHMARKS=OFF \
+            -DXNNPACK_LIBRARY_TYPE=static
+          cmake --build /tmp/xnn-build --target XNNPACK pthreadpool -j2
+
+      - name: Generate matrix benchmark sources
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/component-matrix
+
+          cat > /tmp/component-matrix/common.hpp <<'EOF'
+          #pragma once
+          #include <algorithm>
+          #include <chrono>
+          #include <cstdint>
+          #include <cstdio>
+          #include <cstdlib>
+          #include <cstring>
+          #include <iomanip>
+          #include <iostream>
+          #include <string>
+          #include <vector>
+          struct Buf { double* p; explicit Buf(size_t n){ if(posix_memalign((void**)&p,64,n*sizeof(double))) std::abort(); } ~Buf(){ free(p); } };
+          static inline uint64_t sm(uint64_t x){ x+=0x9e3779b97f4a7c15ULL; x=(x^(x>>30))*0xbf58476d1ce4e5b9ULL; x=(x^(x>>27))*0x94d049bb133111ebULL; return x^(x>>31); }
+          static inline double uni(uint64_t h){ return ((double)(h>>11)+0.5)/9007199254740992.0; }
+          static inline void fill_input(double* x,size_t n,int d){ uint64_t s=0x243f6a8885a308d3ULL^((uint64_t)n<<19)^((uint64_t)d<<61); for(size_t i=0;i<n;i++){ double q=uni(sm(s+i*0x9e3779b97f4a7c15ULL)); double a=d?1.000001+q*98.999998:0x1p-20+q*(1.0-0x1p-19); x[i]=(i&1)?-a:a; } }
+          static inline double med(std::vector<double> v){ std::sort(v.begin(),v.end()); return v[v.size()/2]; }
+          static inline size_t calls_for(size_t n){ size_t c=260000/n; return std::max<size_t>(64,std::min<size_t>(2600,c)); }
+          template<class F> static double bench_ns(F f,size_t denom,size_t calls,int reps=9){ for(int i=0;i<12;i++)f(); std::vector<double> v; v.reserve(reps); for(int r=0;r<reps;r++){ auto a=std::chrono::steady_clock::now(); for(size_t k=0;k<calls;k++) f(); auto b=std::chrono::steady_clock::now(); v.push_back(std::chrono::duration<double,std::nano>(b-a).count()/calls/denom); } return med(v); }
+          static inline const std::vector<size_t>& sizes(){ static const std::vector<size_t> s={100,125,150,160,192,200,224,250,256,300,320,384,400,448,500,512,600,640,750,768,896,900,960,1000,1024,1100,1152,1200,1250,1280,1344,1399,1400,1500,1536,1600,1664,1750,1792,1900,2000}; return s; }
+          EOF
+
+          cat > /tmp/component-matrix/body_turbo.cpp <<'EOF'
+          #include "common.hpp"
+          extern void exp53_turbo_0101_2000_candidate(double*,const double*,size_t);
+          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
+          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); exp53_turbo_0101_2000_candidate(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{exp53_turbo_0101_2000_candidate(out.p,in.p,n);},n,c); std::cout<<"BODY lib=turbo domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          EOF
+
+          cat > /tmp/component-matrix/body_highway.cpp <<'EOF'
+          #include "common.hpp"
+          extern void exp53_highway_0101_2000_candidate(double*,const double*,size_t);
+          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
+          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); exp53_highway_0101_2000_candidate(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{exp53_highway_0101_2000_candidate(out.p,in.p,n);},n,c); std::cout<<"BODY lib=highway domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          EOF
+
+          cat > /tmp/component-matrix/body_frozen.cpp <<'EOF'
+          #include "common.hpp"
+          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
+          int main(){ Buf in(2000),out(2000); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); auto c=calls_for(n); double t=bench_ns([&]{exp53_n2_vmstyle_u4_0381_frozen(out.p,in.p,n);},n,c); std::cout<<"BODY lib=frozen-native domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          EOF
+
+          cat > /tmp/component-matrix/run_custom2.cpp <<'EOF'
+          #include "common.hpp"
+          #include "exp53_batch_custom_2core_nt_frozen.hpp"
+          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
+          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); Exp53CustomPermanent2CoreFrozen ex; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{ex.run(out.p,in.p,n);},n,c); std::cout<<"EXEC lib=custom2 domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          EOF
+
+          cat > /tmp/component-matrix/run_fastflow.cpp <<'EOF'
+          #include "common.hpp"
+          #include "exp53_fastflow_batch_2core_frozen.hpp"
+          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
+          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); Exp53FastFlowFrozenExecutor ex(2,exp53_n2_vmstyle_u4_0381_frozen); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run_static(out.p,in.p,n,2); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{ex.run_static(out.p,in.p,n,2);},n,c); std::cout<<"EXEC lib=fastflow domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          EOF
+
+          cat > /tmp/component-matrix/run_highway_sync.cpp <<'EOF'
+          #include "common.hpp"
+          #include "exp53_highway_sync_1400_3000_frozen.hpp"
+          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
+          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); Exp53HighwaySync1400_3000Frozen ex; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run(out.p,in.p,n); /* Highway vector tail is formula-faithful but may differ from scalar frozen tail, so do not require full memcmp here. */ auto c=calls_for(n); double t=bench_ns([&]{ex.run(out.p,in.p,n);},n,c); std::cout<<"EXEC lib=highway-sync domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff_gate=bulk\n"; } }
+          EOF
+
+          cat > /tmp/component-matrix/run_xnn.cpp <<'EOF'
+          #include "common.hpp"
+          extern "C" void* exp53_xnnpack_create(size_t);
+          extern "C" void exp53_xnnpack_destroy(void*);
+          extern "C" void exp53_xnnpack_run_mode(void*,double*,const double*,size_t,size_t,int);
+          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
+          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); void* p=exp53_xnnpack_create(2); if(!p) return 7; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); double best=1e99; size_t bt=0; int bm=0; for(int m=0;m<4;m++) for(size_t tile: {size_t(32),size_t(64),size_t(96),size_t(128),size_t(192),size_t(256),size_t(384),size_t(512)}){ exp53_xnnpack_run_mode(p,out.p,in.p,n,tile,m); if(std::memcmp(out.p,ref.p,n*8)) continue; auto c=calls_for(n); double t=bench_ns([&]{exp53_xnnpack_run_mode(p,out.p,in.p,n,tile,m);},n,c,7); if(t<best){best=t;bt=tile;bm=m;} } if(best>1e90) return 9; std::cout<<"EXEC lib=xnnpack domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<best<<" tile="<<bt<<" mode="<<bm<<" bitdiff=0\n"; } exp53_xnnpack_destroy(p); }
+          EOF
+
+          cat > /tmp/component-matrix/tail.cpp <<'EOF'
+          #include "common.hpp"
+          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
+          int main(){ Buf in(64),out(64); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t r=1;r<32;r++){ fill_input(in.p,r,d); size_t c=20000; double t=bench_ns([&]{exp53_n2_vmstyle_u4_0381_frozen(out.p,in.p,r);},r,c); std::cout<<"TAIL lib=frozen-native domain="<<(d?"mid":"unit")<<" rem="<<r<<" ns="<<t<<"\n"; } }
+          EOF
+
+      - name: Build all process executables
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          CFLAGS='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
+          CXXFLAGS="$CFLAGS -std=c++17"
+          "$ICX" $CFLAGS -c exp53_n2_vmstyle_u4_0381_frozen.c -o /tmp/component-matrix/frozen.o
+
+          "$ICPX" $CXXFLAGS -I/tmp/component-matrix /tmp/component-matrix/body_frozen.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/body_frozen
+          "$ICPX" $CXXFLAGS -I/tmp/component-matrix -I/tmp/turbo exp53_turbo_0101_2000_candidate.cpp /tmp/component-matrix/body_turbo.cpp -lpthread -lm -o /tmp/component-matrix/body_turbo
+          "$ICPX" $CXXFLAGS -I/tmp/component-matrix -I/tmp/highway exp53_highway_0101_2000_candidate.cpp /tmp/component-matrix/body_highway.cpp -lpthread -lm -o /tmp/component-matrix/body_highway
+          "$ICPX" $CXXFLAGS -I. -I/tmp/component-matrix /tmp/component-matrix/run_custom2.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/run_custom2
+          "$ICPX" $CXXFLAGS -I. -I/tmp/component-matrix -I/tmp/fastflow /tmp/component-matrix/run_fastflow.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/run_fastflow
+          "$ICPX" $CXXFLAGS -I. -I/tmp/component-matrix -I/tmp/highway /tmp/component-matrix/run_highway_sync.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/run_highway_sync
+
+          # Build XNNPACK bridge against XNNPACK's own pthreadpool target output.
+          PTHREAD_A="$(find /tmp/xnn-build -type f -name 'libpthreadpool.a' -print -quit)"
+          XNN_A="$(find /tmp/xnn-build -type f -name 'libXNNPACK.a' -print -quit)"
+          PTHREAD_INC="$(find /tmp/xnn-build -type f -name pthreadpool.h -printf '%h\n' -quit)"
+          if [[ -z "$PTHREAD_INC" ]]; then PTHREAD_INC="$(find /tmp/xnnpack -type f -name pthreadpool.h -printf '%h\n' -quit)"; fi
+          test -n "$PTHREAD_A"; test -n "$XNN_A"; test -n "$PTHREAD_INC"
+          "$ICPX" $CXXFLAGS -I/tmp/component-matrix -I/tmp/xnnpack/include -I"$PTHREAD_INC" \
+            exp53_xnnpack_internal_0101_1400_candidate.cpp /tmp/component-matrix/run_xnn.cpp /tmp/component-matrix/frozen.o \
+            "$XNN_A" "$PTHREAD_A" -lpthread -lm -ldl -o /tmp/component-matrix/run_xnn
+
+          "$ICPX" $CXXFLAGS -I/tmp/component-matrix /tmp/component-matrix/tail.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/tail
+
+      - name: Run component matrix with exclusive runtime ownership
+        if: steps.cpu.outputs.eligible == '1'
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=/tmp/component-matrix/raw.txt
+          : > "$OUT"
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "TURBO=$(git -C /tmp/turbo rev-parse HEAD)"
+            echo "HIGHWAY=$(git -C /tmp/highway rev-parse HEAD)"
+            echo "FASTFLOW=$(git -C /tmp/fastflow rev-parse HEAD)"
+            echo "XNNPACK=$(git -C /tmp/xnnpack rev-parse HEAD)"
+            echo "RULE=all persistent runtimes executed in separate processes; no simultaneous CPU2 spin workers"
+          } | tee -a "$OUT"
+
+          # SIMD/body: single-core CPU0 only.
+          taskset -c 0 /tmp/component-matrix/body_frozen | tee -a "$OUT"
+          taskset -c 0 /tmp/component-matrix/body_turbo  | tee -a "$OUT"
+          taskset -c 0 /tmp/component-matrix/body_highway | tee -a "$OUT"
+
+          # End-to-end execution/sync/partition: each gets exclusive CPU0+CPU2 lifecycle.
+          taskset -c 0,2 /tmp/component-matrix/run_xnn | tee -a "$OUT"
+          taskset -c 0,2 /tmp/component-matrix/run_fastflow | tee -a "$OUT"
+          taskset -c 0,2 /tmp/component-matrix/run_custom2 | tee -a "$OUT"
+          taskset -c 0,2 /tmp/component-matrix/run_highway_sync | tee -a "$OUT"
+
+          # Tail baseline process.
+          taskset -c 0 /tmp/component-matrix/tail | tee -a "$OUT"
+
+          ! grep -q 'bitdiff=1' "$OUT"
+
+      - name: Aggregate winner by process and size band
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re, statistics, pathlib
+          p=pathlib.Path('/tmp/component-matrix/raw.txt')
+          lines=p.read_text().splitlines()
+          rows=[]
+          for ln in lines:
+              if not (ln.startswith('BODY ') or ln.startswith('EXEC ')):
+                  continue
+              kind=ln.split()[0]
+              kv=dict(x.split('=',1) for x in ln.split()[1:] if '=' in x)
+              rows.append((kind,kv['lib'],kv['domain'],int(kv['n']),float(kv['ns'])))
+
+          bands=[(100,255),(256,511),(512,899),(900,1199),(1200,1399),(1400,1599),(1600,2000)]
+          out=[]
+          out.append('EXP53 COMPONENT-LIBRARY MATRIX WINNERS')
+          out.append('Interpretation: BODY chooses SIMD/math execution backend; EXEC chooses scheduler/sync/partition runtime. Math formula remains frozen.')
+          for kind in ('BODY','EXEC'):
+              out.append('')
+              out.append(kind+' WINNERS')
+              for dom in ('unit','mid'):
+                  for lo,hi in bands:
+                      cand={}
+                      for k,lib,d,n,ns in rows:
+                          if k==kind and d==dom and lo<=n<=hi:
+                              cand.setdefault(lib,[]).append(ns)
+                      if not cand: continue
+                      meds={lib:statistics.median(v) for lib,v in cand.items()}
+                      win=min(meds,key=meds.get)
+                      ranked=sorted(meds.items(), key=lambda z:z[1])
+                      out.append(f'{kind} domain={dom} band={lo}-{hi} winner={win} median_ns={meds[win]:.9f} ranking=' + ','.join(f'{a}:{b:.9f}' for a,b in ranked))
+
+          # Pointwise winners expose crossovers hidden by band medians.
+          out.append('')
+          out.append('POINTWISE WINNERS')
+          for kind in ('BODY','EXEC'):
+              for dom in ('unit','mid'):
+                  ns=sorted({n for k,l,d,n,t in rows if k==kind and d==dom})
+                  for n in ns:
+                      cand=[(t,l) for k,l,d,nn,t in rows if k==kind and d==dom and nn==n]
+                      if not cand: continue
+                      t,l=min(cand)
+                      out.append(f'POINT kind={kind} domain={dom} n={n} winner={l} ns={t:.9f}')
+
+          # Tail is currently only the frozen-native reference; explicit N/A avoids fake comparisons.
+          out.append('')
+          out.append('TAIL process: frozen-native measured for rem=1..31; Turbo/Highway tails are included in their whole BODY timings, XNNPACK delegates residual to frozen, scheduler libraries do not own tail math independently.')
+          out.append('STORE process: temporal is the fair 100-2000 default; NT was previously shown unsuitable at this scale and is not allowed to win by changing output-use semantics.')
+          out.append('AFFINITY process: custom2/highway-sync explicitly pin CPU0+CPU2; FastFlow/XNNPACK are constrained by taskset to CPU0+CPU2 for this workflow.')
+          pathlib.Path('/tmp/component-matrix/summary.txt').write_text('\n'.join(out)+'\n')
+          print('\n'.join(out))
+          PY
+
+      - name: Upload component matrix
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-component-library-matrix-${{ matrix.shard }}
+          path: |
+            /tmp/component-matrix/raw.txt
+            /tmp/component-matrix/summary.txt
