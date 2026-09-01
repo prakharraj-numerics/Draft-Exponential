@@ -77,7 +77,13 @@ jobs:
           COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
           HWY=/home/runner/exp53-component-deps/highway
           "$ICPX" -std=c++17 $COMMON -Iproduction -I/home/runner/vcl-exp53 -c production/exp53_vcl_u2z_0100_frozen.cpp -o /tmp/final4/vcl.o
-          "$ICX" $COMMON -Iproduction -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/final4/nt.o
+          # This NT TU embeds the same frozen temporal TU as the VCL object. Rename
+          # only those embedded symbols locally to avoid duplicate linker symbols;
+          # the exported NT entry point and production behavior are unchanged.
+          "$ICX" $COMMON -Iproduction \
+            -Dexp53_n2_fused_u4_038_frozen=exp53_n2_fused_u4_038_frozen_ntlocal \
+            -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_n2_vmstyle_u4_0381_frozen_ntlocal \
+            -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/final4/nt.o
           "$ICPX" -std=c++17 $COMMON -Iproduction -I"$HWY" -I"$MKLROOT/include" \
             bench_exp53_final_shallow_4batches.cpp /tmp/final4/vcl.o /tmp/final4/nt.o \
             -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed \
