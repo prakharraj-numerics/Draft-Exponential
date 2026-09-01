@@ -55,12 +55,13 @@ jobs:
         run: |
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
+          COMPILERLIB=/opt/intel/oneapi/compiler/latest/lib
           ICX=/opt/intel/oneapi/compiler/latest/bin/icx
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
           CFLAGS='-O3 -xGRANITERAPIDS -fp-model=precise -fno-math-errno -DNDEBUG -std=c11'
           CXXFLAGS='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17 -fiopenmp -DPPL_USE_X86_OMP'
           INC="-I$MKLROOT/include -I/tmp/pplkernel/include -I/tmp/pplkernel/src"
-          LINK="-fiopenmp -L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
+          LINK="-fiopenmp -L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,-rpath,$COMPILERLIB -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           "$ICX" $CFLAGS -c exp53_n2_vmstyle_u4_0381_frozen.c -o /tmp/frozen_ref.o
           "$ICPX" $CXXFLAGS $INC -c exp53_openppl_0101_1400_candidate.cpp -o /tmp/openppl_exp.o
           "$ICPX" $CXXFLAGS $INC -c bench_exp53_openppl_0101_1400.cpp -o /tmp/bench_openppl.o
@@ -70,6 +71,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export LD_LIBRARY_PATH="/opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/mkl/latest/lib:${LD_LIBRARY_PATH:-}"
           { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo "PPLNN_HEAD=$(git -C /tmp/pplnn rev-parse HEAD)"; echo "PPLKERNEL_HEAD=$(git -C /tmp/pplkernel rev-parse HEAD)"; } > /tmp/result.txt
           taskset -c 0,2 /tmp/bench_openppl | tee -a /tmp/result.txt
           grep -q '^FINAL domain=unit n=101 ' /tmp/result.txt
