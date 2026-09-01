@@ -55,9 +55,6 @@ jobs:
           export CC=/opt/intel/oneapi/compiler/latest/bin/icx
           export CXX=/opt/intel/oneapi/compiler/latest/bin/icpx
           MKLROOT=/opt/intel/oneapi/mkl/latest
-          PTHREADPOOL_INC=$(find /tmp/XNNPACK -path '*/pthreadpool*/include' -type d -print -quit)
-          test -n "$PTHREADPOOL_INC"
-          echo "PTHREADPOOL_INC=$PTHREADPOOL_INC"
           rm -rf /tmp/exp53-xnn-src /tmp/xnn-exp-build /tmp/xnn-subbuild
           mkdir -p /tmp/exp53-xnn-src
           cat > /tmp/exp53-xnn-src/CMakeLists.txt <<EOF
@@ -75,7 +72,7 @@ jobs:
           add_executable(bench
             "$GITHUB_WORKSPACE/exp53_xnnpack_internal_0101_1400_candidate.cpp"
             "$GITHUB_WORKSPACE/bench_exp53_xnnpack_internal_0101_1400.cpp")
-          target_include_directories(bench PRIVATE "$MKLROOT/include" "$PTHREADPOOL_INC" /tmp/XNNPACK/include)
+          target_include_directories(bench PRIVATE "$MKLROOT/include" /tmp/XNNPACK/include)
           target_compile_options(bench PRIVATE -O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG)
           target_link_directories(bench PRIVATE "$MKLROOT/lib")
           target_link_options(bench PRIVATE -Wl,-rpath,"$MKLROOT/lib" -Wl,-rpath,/opt/intel/oneapi/compiler/latest/lib)
