@@ -1,8 +1,7 @@
 diff --git a/source/backend/cpu/ThreadPool.hpp b/source/backend/cpu/ThreadPool.hpp
-index 9d57ef4..0000000 100644
 --- a/source/backend/cpu/ThreadPool.hpp
 +++ b/source/backend/cpu/ThreadPool.hpp
-@@ -26,6 +26,8 @@ public:
+@@ -26,4 +26,6 @@ public:
      void enqueue(TASK* task, int index);
 +    void enqueueHelperOnly(TASK* task, int index);
 +    void waitHelperOnly(int index);
@@ -10,10 +9,9 @@ index 9d57ef4..0000000 100644
      void active();
      void deactive();
 diff --git a/source/backend/cpu/ThreadPool.cpp b/source/backend/cpu/ThreadPool.cpp
-index 75a42da..0000000 100644
 --- a/source/backend/cpu/ThreadPool.cpp
 +++ b/source/backend/cpu/ThreadPool.cpp
-@@ -101,6 +101,25 @@ void ThreadPool::enqueue(TASK* taskp, int index) {
+@@ -101,3 +101,26 @@ void ThreadPool::enqueue(TASK* taskp, int index) {
      enqueueInternal(taskp, index);
  }
 +
