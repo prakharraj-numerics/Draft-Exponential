@@ -46,15 +46,14 @@ jobs:
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
-          "$NVCXX" -O4 -fast -tp=host -Mnofma -Mnoautoinline \
+          "$NVCXX" -O4 -fast -tp=host -Mnofma -Mnoautoinline -Mnovect \
             -DEXP53_VARIANT_FN=exp53_nvcxx -DEXP53_TAIL_FN=exp53_nvcxx_tail \
             -c exp53_codegen_variant.cpp -o /tmp/exp53_nvcxx.o
-          "$NVCXX" -O4 -fast -tp=host -S \
+          "$NVCXX" -O4 -fast -tp=host -Mnofma -Mnoautoinline -Mnovect -S \
             -DEXP53_VARIANT_FN=exp53_nvcxx_asm -DEXP53_TAIL_FN=exp53_nvcxx_tail_asm \
             exp53_codegen_variant.cpp -o /tmp/exp53_nvcxx.s
           "$ICPX" -O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17 \
-            -I"$MKLROOT/include" -c bench_exp53_nvcxx_0101_2000.cpp -o /tmp/bench_nvcxx.o
-          "$NVCXX" -tp=host /tmp/bench_nvcxx.o /tmp/exp53_nvcxx.o \
+            -I"$MKLROOT/include" bench_exp53_nvcxx_0101_2000.cpp /tmp/exp53_nvcxx.o \
             -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed \
             -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench_nvcxx
           { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; "$NVCXX" --version | head -5; } | tee /tmp/nvcxx-meta.txt
