@@ -29,6 +29,12 @@ jobs:
         with:
           path: /opt/intel/oneapi
           key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Install MPFR headers
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libmpfr-dev libgmp-dev
       - name: Build and run
         if: steps.cpu.outputs.eligible == '1'
         env:
