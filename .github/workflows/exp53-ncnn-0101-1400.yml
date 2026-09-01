@@ -1,0 +1,102 @@
+name: EXP53 Tencent ncnn X86 101-1400 Xeon
+
+on:
+  push:
+    paths:
+      - 'exp53_ncnn_0101_1400_candidate.cpp'
+      - 'bench_exp53_ncnn_0101_1400.cpp'
+      - '.github/workflows/exp53-ncnn-0101-1400.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    env:
+      MKL_NUM_THREADS: 1
+      OMP_NUM_THREADS: 2
+      OMP_DYNAMIC: FALSE
+      OMP_PROC_BIND: TRUE
+      OMP_PLACES: cores
+      KMP_BLOCKTIME: 0
+      KMP_AFFINITY: granularity=fine,compact,1,0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; fi
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Fetch pinned Tencent ncnn
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/Tencent/ncnn.git /tmp/ncnn
+          git -C /tmp/ncnn checkout 60bfa40044efffbba5d4ccae090a037185942a4d
+          test "$(git -C /tmp/ncnn rev-parse HEAD)" = "60bfa40044efffbba5d4ccae090a037185942a4d"
+      - name: Build ncnn
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CC=/opt/intel/oneapi/compiler/latest/bin/icx
+          export CXX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          cmake -S /tmp/ncnn -B /tmp/ncnn-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNCNN_OPENMP=ON \
+            -DNCNN_AVX512=ON \
+            -DNCNN_BUILD_TOOLS=OFF \
+            -DNCNN_BUILD_EXAMPLES=OFF \
+            -DNCNN_BUILD_BENCHMARK=OFF \
+            -DNCNN_BUILD_TESTS=OFF \
+            -DNCNN_BUILD_SHARED_LIBS=OFF
+          cmake --build /tmp/ncnn-build -j2
+      - name: Build benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          COMPILERLIB=/opt/intel/oneapi/compiler/latest/lib
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          CFLAGS='-O3 -xGRANITERAPIDS -fp-model=precise -fno-math-errno -DNDEBUG -std=c11'
+          CXXFLAGS='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17 -fiopenmp'
+          INC="-I$MKLROOT/include -I/tmp/ncnn/src -I/tmp/ncnn-build/src"
+          NCNNLIB=$(find /tmp/ncnn-build -name 'libncnn.a' -print -quit)
+          test -n "$NCNNLIB"
+          LINK="-fiopenmp $NCNNLIB -L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,-rpath,$COMPILERLIB -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
+          "$ICX" $CFLAGS -c exp53_n2_vmstyle_u4_0381_frozen.c -o /tmp/frozen_ref.o
+          "$ICPX" $CXXFLAGS $INC -c exp53_ncnn_0101_1400_candidate.cpp -o /tmp/ncnn_exp.o
+          "$ICPX" $CXXFLAGS $INC -c bench_exp53_ncnn_0101_1400.cpp -o /tmp/bench_ncnn.o
+          "$ICPX" /tmp/ncnn_exp.o /tmp/frozen_ref.o /tmp/bench_ncnn.o $LINK -o /tmp/bench_ncnn
+      - name: Benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="/opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/mkl/latest/lib:${LD_LIBRARY_PATH:-}"
+          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo "NCNN_HEAD=$(git -C /tmp/ncnn rev-parse HEAD)"; } > /tmp/result.txt
+          taskset -c 0,2 /tmp/bench_ncnn | tee -a /tmp/result.txt
+          grep -q '^FINAL domain=unit n=101 ' /tmp/result.txt
+          grep -q '^FINAL domain=unit n=1400 ' /tmp/result.txt
+          grep -q '^FINAL domain=mid n=1400 ' /tmp/result.txt
+          ! grep -Eq 'gt1=[1-9][0-9]*' /tmp/result.txt
+      - name: Upload
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-ncnn-101-1400-${{ matrix.shard }}
+          path: /tmp/result.txt
