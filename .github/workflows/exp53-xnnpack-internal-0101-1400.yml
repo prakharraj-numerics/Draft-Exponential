@@ -1,0 +1,110 @@
+name: EXP53 XNNPACK Internal FP64 101-1400 Xeon
+
+on:
+  push:
+    paths:
+      - 'exp53_xnnpack_internal_0101_1400_candidate.cpp'
+      - 'bench_exp53_xnnpack_internal_0101_1400.cpp'
+      - '.github/workflows/exp53-xnnpack-internal-0101-1400.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Fetch pinned XNNPACK
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          git clone --recursive https://github.com/google/XNNPACK.git /tmp/XNNPACK
+          git -C /tmp/XNNPACK checkout b9b1cec0d2c62f1c3c0e1a590f4a42ddab309719
+          git -C /tmp/XNNPACK submodule update --init --recursive
+          test "$(git -C /tmp/XNNPACK rev-parse HEAD)" = "b9b1cec0d2c62f1c3c0e1a590f4a42ddab309719"
+
+      - name: Configure and build
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CC=/opt/intel/oneapi/compiler/latest/bin/icx
+          export CXX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          PTHREADPOOL_INC=$(find /tmp/XNNPACK -path '*/pthreadpool*/include' -type d | head -1)
+          test -n "$PTHREADPOOL_INC"
+          cat > /tmp/CMakeLists.txt <<EOF
+          cmake_minimum_required(VERSION 3.15)
+          project(exp53_xnn C CXX)
+          set(CMAKE_C_STANDARD 11)
+          set(CMAKE_CXX_STANDARD 17)
+          set(XNNPACK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+          set(XNNPACK_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+          set(XNNPACK_BUILD_ALL_MICROKERNELS OFF CACHE BOOL "" FORCE)
+          set(XNNPACK_LIBRARY_TYPE static CACHE STRING "" FORCE)
+          add_subdirectory(/tmp/XNNPACK /tmp/xnn-subbuild)
+          add_library(frozen STATIC "$GITHUB_WORKSPACE/exp53_n2_vmstyle_u4_0381_frozen.c")
+          target_compile_options(frozen PRIVATE -O3 -xGRANITERAPIDS -fp-model=precise -fno-math-errno)
+          add_executable(bench
+            "$GITHUB_WORKSPACE/exp53_xnnpack_internal_0101_1400_candidate.cpp"
+            "$GITHUB_WORKSPACE/bench_exp53_xnnpack_internal_0101_1400.cpp")
+          target_include_directories(bench PRIVATE "$MKLROOT/include" "$PTHREADPOOL_INC" /tmp/XNNPACK/include)
+          target_compile_options(bench PRIVATE -O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG)
+          target_link_directories(bench PRIVATE "$MKLROOT/lib")
+          target_link_options(bench PRIVATE -Wl,-rpath,"$MKLROOT/lib" -Wl,-rpath,/opt/intel/oneapi/compiler/latest/lib)
+          target_link_libraries(bench PRIVATE frozen XNNPACK pthreadpool mkl_intel_lp64 mkl_sequential mkl_core pthread m dl)
+          EOF
+          cmake -S /tmp -B /tmp/xnn-exp-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/xnn-exp-build --target bench -j2
+
+      - name: Benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          MKL_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="/opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/mkl/latest/lib:${LD_LIBRARY_PATH:-}"
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "XNNPACK_HEAD=$(git -C /tmp/XNNPACK rev-parse HEAD)"
+            echo "MODE=XNNPACK internal FP64 execution extension; XNNPACK pthreadpool; frozen EXP53 math only"
+          } > /tmp/result.txt
+          taskset -c 0,2 /tmp/xnn-exp-build/bench | tee -a /tmp/result.txt
+          grep -q '^FINAL domain=unit n=101 ' /tmp/result.txt
+          grep -q '^FINAL domain=unit n=1399 ' /tmp/result.txt
+          grep -q '^FINAL domain=unit n=1400 ' /tmp/result.txt
+          grep -q '^FINAL domain=mid n=1400 ' /tmp/result.txt
+          ! grep -Eq 'bitdiff=[1-9][0-9]*' /tmp/result.txt
+
+      - name: Upload
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-xnnpack-internal-101-1400-${{ matrix.shard }}
+          path: /tmp/result.txt
