@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'exp53_batch_production.hpp'
+      - 'exp53_hybrid_0101_1400.hpp'
       - 'smoke_exp53_batch_production.cpp'
       - '.github/workflows/exp53-batch-production-smoke.yml'
   workflow_dispatch:
@@ -38,6 +39,14 @@ jobs:
           path: /opt/intel/oneapi
           key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
 
+      - name: Restore component dependencies
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/exp53-component-deps
+          key: exp53-component-deps-ubuntu24-x86_64-xnn-b9b1cec0-v1
+          fail-on-cache-miss: true
+
       - name: Fetch pinned FastFlow
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -49,6 +58,17 @@ jobs:
           git -C /tmp/fastflow fetch -q --depth 1 origin d476f66ab924d8d122f54b4b90aee00ef979aea8
           git -C /tmp/fastflow checkout -q FETCH_HEAD
 
+      - name: Expose hybrid dependencies
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/home/runner/exp53-component-deps
+          rm -rf /tmp/highway /tmp/xnnpack /tmp/xnn-build
+          ln -s "$ROOT/highway" /tmp/highway
+          ln -s "$ROOT/xnnpack" /tmp/xnnpack
+          ln -s "$ROOT/xnn-build" /tmp/xnn-build
+
       - name: Build and smoke
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -58,10 +78,15 @@ jobs:
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
           COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
           "$ICX" $COMMON -c exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/nt.o
-          "$ICPX" -std=c++17 $COMMON -I/tmp/fastflow smoke_exp53_batch_production.cpp /tmp/nt.o -pthread -lm -o /tmp/smoke
+          PTHREAD_A="$(find -L /tmp/xnn-build -type f -name libpthreadpool.a -print -quit)"
+          PTHREAD_INC="$(find -L /tmp/xnn-build -type f -name pthreadpool.h -printf '%h\n' -quit)"
+          if [[ -z "$PTHREAD_INC" ]]; then PTHREAD_INC="$(find -L /tmp/xnnpack -type f -name pthreadpool.h -printf '%h\n' -quit)"; fi
+          test -n "$PTHREAD_A"
+          test -n "$PTHREAD_INC"
+          "$ICPX" -std=c++17 $COMMON -I/tmp/fastflow -I/tmp/highway -I"$PTHREAD_INC" smoke_exp53_batch_production.cpp /tmp/nt.o "$PTHREAD_A" -pthread -lm -o /tmp/smoke
           objdump -d -Mintel /tmp/nt.o | grep -q vmovntpd
           /tmp/smoke | tee /tmp/production-smoke.txt
-          grep -q 'default_bitdiff=0 streaming_bitdiff=0' /tmp/production-smoke.txt
+          grep -q 'hybrid_bitdiff=0 streaming_bitdiff=0 large_default_bitdiff=0 large_streaming_bitdiff=0' /tmp/production-smoke.txt
 
       - name: Upload
         if: steps.cpu.outputs.eligible == '1'
