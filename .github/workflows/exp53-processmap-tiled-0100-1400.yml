@@ -1,0 +1,96 @@
+name: EXP53 tiled U3-U5-U6 attack 100-1400
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'exp53_processmap_tiled_0100_1400.c'
+      - 'bench_exp53_processmap_tiled_0100_1400.cpp'
+      - '.github/workflows/exp53-processmap-tiled-0100-1400.yml'
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; fi
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Build and run
+        if: steps.cpu.outputs.eligible == '1'
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CROOT=/opt/intel/oneapi/compiler/latest
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=$CROOT/bin/icx
+          ICPX=$CROOT/bin/icpx
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
+          "$ICX" $COMMON -c exp53_processmap_tiled_0100_1400.c -o /tmp/tiled.o
+          "$ICPX" -std=c++17 $COMMON -I"$MKLROOT/include" bench_exp53_processmap_tiled_0100_1400.cpp /tmp/tiled.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lmpfr -lgmp -lpthread -lm -ldl -o /tmp/bench
+          objdump -d -Mintel /tmp/tiled.o > /tmp/tiled.asm
+          : > /tmp/accuracy.txt
+          for s in tile3 tile5 tile6 frozen; do /tmp/bench "validate:$s" | tee -a /tmp/accuracy.txt; done
+          : > /tmp/raw.txt
+          for rep in 1 2 3 4 5; do
+            for s in tile3 tile5 tile6 frozen intel; do /tmp/bench "$s" | tee -a /tmp/raw.txt; done
+          done
+          python3 - <<'PY' > /tmp/results.txt
+          import re,statistics
+          from collections import defaultdict
+          stacks=('tile3','tile5','tile6','frozen','intel'); cand=stacks[:3]; d=defaultdict(list)
+          rp=re.compile(r'RESULT stack=(\w+) domain=(unit|mid) n=(\d+) calls=(\d+) ns=([0-9.]+)')
+          for line in open('/tmp/raw.txt'):
+              m=rp.search(line)
+              if m:d[(m.group(1),m.group(2),int(m.group(3)))].append(float(m.group(5)))
+          acc={}; ra=re.compile(r'ACCURACY stack=(\w+) total=(\d+) maxulp=(\d+) gt1=(\d+)')
+          for line in open('/tmp/accuracy.txt'):
+              m=ra.search(line)
+              if m:acc[m.group(1)]=(int(m.group(3)),int(m.group(4)))
+          valid={s:(s in acc and acc[s][0]<=1 and acc[s][1]==0) for s in cand}
+          print(open('/tmp/accuracy.txt').read(),end='')
+          wins={s:0 for s in stacks}; oi=of=0; orat=[]
+          for dom in ('unit','mid'):
+              print('CATEGORY domain='+dom)
+              for n in range(100,1401,50):
+                  vals={s:statistics.median(d[(s,dom,n)]) for s in stacks}
+                  best=min(vals,key=vals.get); wins[best]+=1
+                  pool={s:vals[s] for s in cand if valid[s]}; pool['frozen']=vals['frozen']; ob=min(pool,key=pool.get); ov=pool[ob]
+                  oi+=ov<vals['intel']; of+=ov<vals['frozen']; orat.append(vals['intel']/ov)
+                  print('FINAL domain=%s n=%d '%(dom,n)+' '.join('%s_ns=%.9f'%(s,vals[s]) for s in stacks)+' best='+best+' valid_oracle='+ob+' oracle_ns=%.9f'%ov)
+          print('WINS '+' '.join('%s=%d'%(s,wins[s]) for s in stacks))
+          for s in cand:
+              rf=[];ri=[]
+              for dom in ('unit','mid'):
+                  for n in range(100,1401,50):
+                      v=statistics.median(d[(s,dom,n)]); rf.append(statistics.median(d[('frozen',dom,n)])/v); ri.append(statistics.median(d[('intel',dom,n)])/v)
+              print('SUMMARY stack=%s valid=%d median_frozen_over=%.6f median_intel_over=%.6f wins_vs_frozen=%d wins_vs_intel=%d'%(s,int(valid[s]),statistics.median(rf),statistics.median(ri),sum(x>1 for x in rf),sum(x>1 for x in ri)))
+          print('ORACLE valid_size_dispatch wins_vs_intel=%d/54 wins_vs_frozen=%d/54 median_intel_over_oracle=%.6f'%(oi,of,statistics.median(orat)))
+          PY
+          cat /tmp/results.txt
+      - name: Upload evidence
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-tiled-attack-${{ matrix.shard }}
+          path: |
+            /tmp/results.txt
+            /tmp/raw.txt
+            /tmp/accuracy.txt
+            /tmp/tiled.asm
