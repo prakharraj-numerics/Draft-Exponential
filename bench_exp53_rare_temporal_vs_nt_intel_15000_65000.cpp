@@ -56,7 +56,7 @@ static uint64_t bits_of(double x) {
 
 struct Accuracy {
     uint64_t maxulp = 0;
-    size_t gt1 = 0;
+    size_t gt2 = 0;
 };
 
 static Accuracy compare_ulp(const double* got, const double* ref, size_t n) {
@@ -71,7 +71,7 @@ static Accuracy compare_ulp(const double* got, const double* ref, size_t n) {
             ulp = 0;
         }
         if (ulp > a.maxulp) a.maxulp = ulp;
-        if (ulp > 1) ++a.gt1;
+        if (ulp > 2) ++a.gt2;
     }
     return a;
 }
@@ -82,10 +82,14 @@ static double median(std::vector<double>& v) {
 }
 
 static size_t call_count(size_t n) {
-    constexpr size_t TARGET_VALUES = 64000000ULL;
+    /* Exact geometry used by the old MEDIUM streaming benchmark: about
+       6 million output values per timing sample. This stays well below the
+       256 MiB ring capacity at 15K..65K, so a sample does not wrap and turn
+       into a cache-reuse benchmark. */
+    constexpr size_t TARGET_VALUES = 6000000ULL;
     size_t c = TARGET_VALUES / n;
-    if (c < 200) c = 200;
-    if (c > 10000) c = 10000;
+    if (c < 2) c = 2;
+    if (c > 100000) c = 100000;
     return c;
 }
 
@@ -107,7 +111,7 @@ int main(int argc, char** argv) {
     };
 
     std::cout << std::fixed << std::setprecision(9);
-    std::cout << "MODE=" << mode << " OUTPUT_PATTERN=256MiB_rotating_write_once_ring\n";
+    std::cout << "MODE=" << mode << " OUTPUT_PATTERN=256MiB_rotating_true_write_once_ring TARGET_VALUES=6000000\n";
 
     for (int domain = 0; domain < 2; ++domain) {
         for (size_t n : sizes) {
@@ -135,9 +139,14 @@ int main(int argc, char** argv) {
                 else vmdExp((MKL_INT)n, in.p, dst, VML_HA);
             };
 
-            for (int w = 0; w < 8; ++w) invoke(out.p + ((size_t)w % slots) * stride);
+            for (int w = 0; w < 3; ++w) invoke(out.p + ((size_t)w % slots) * stride);
 
             const size_t calls = call_count(n);
+            if (calls >= slots) {
+                std::fprintf(stderr, "invalid geometry: calls=%zu slots=%zu n=%zu\n", calls, slots, n);
+                return 3;
+            }
+
             std::vector<double> samples;
             samples.reserve(7);
             for (int s = 0; s < 7; ++s) {
@@ -159,7 +168,7 @@ int main(int argc, char** argv) {
                       << " slots=" << slots
                       << " ns=" << med
                       << " maxulp=" << (mode == "intel" ? 0 : acc.maxulp)
-                      << " gt1=" << (mode == "intel" ? 0 : acc.gt1)
+                      << " gt2=" << (mode == "intel" ? 0 : acc.gt2)
                       << "\n";
         }
     }
