@@ -1,0 +1,249 @@
+name: EXP53 ICX toolchain sweep 100-1400
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'bench_exp53_icx_toolchain_sweep_0100_1400.cpp'
+      - 'train_exp53_icx_pgo_0100_1400.cpp'
+      - '.github/workflows/exp53-icx-toolchain-sweep-0100-1400.yml'
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Build ICX codegen candidates, PGO and assembly audit
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/icx
+          exec > >(tee /tmp/icx/build.txt) 2>&1
+          CROOT=/opt/intel/oneapi/compiler/latest
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=$CROOT/bin/icx
+          ICPX=$CROOT/bin/icpx
+          SRC=exp53_n2_vmstyle_u4_0381_frozen.c
+          BASE=(-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG)
+          NATIVEBASE=(-O3 -march=native -mtune=native -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG)
+
+          build() {
+            local name="$1"; shift
+            echo "BUILD $name extra=$*"
+            "$ICX" "${BASE[@]}" "$@" \
+              -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_icx_${name} \
+              -Dexp53_n2_fused_u4_038_frozen=exp53_icx_${name}_tail \
+              -c "$SRC" -o "/tmp/icx/${name}.o"
+          }
+
+          build frozen
+          build pref0 -qopt-prefetch=0
+          build pref1 -qopt-prefetch=1
+          build pref3 -qopt-prefetch=3
+          build pref5 -qopt-prefetch=5
+          build throughput -qopt-for-throughput=single-job
+          build gshuffle -qopt-multiple-gather-scatter-by-shuffles
+          build gnoshuffle -qno-opt-multiple-gather-scatter-by-shuffles
+          build omp -qopenmp-simd
+          build unroll -funroll-loops
+          build nounroll -fno-unroll-loops
+          build align32 -falign-functions=32 -falign-loops=32
+          build align64 -falign-functions=64 -falign-loops=64
+          build dynalign -qopt-dynamic-align
+          build lto -flto
+          build unrolljam -floop-unroll-and-jam
+          build nostream -qopt-streaming-stores=never
+
+          echo "BUILD native extra=-march=native -mtune=native"
+          "$ICX" "${NATIVEBASE[@]}" \
+            -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_icx_native \
+            -Dexp53_n2_fused_u4_038_frozen=exp53_icx_native_tail \
+            -c "$SRC" -o /tmp/icx/native.o
+
+          echo "BUILD pgo instrumented"
+          "$ICX" "${BASE[@]}" -fprofile-generate=/tmp/icx/pgo.profraw \
+            -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_icx_pgo \
+            -Dexp53_n2_fused_u4_038_frozen=exp53_icx_pgo_tail \
+            -c "$SRC" -o /tmp/icx/pgo_train.o
+          "$ICPX" -std=c++17 -O2 -fprofile-generate=/tmp/icx/pgo.profraw \
+            train_exp53_icx_pgo_0100_1400.cpp /tmp/icx/pgo_train.o -lm -o /tmp/icx/pgo_train
+          taskset -c 0 /tmp/icx/pgo_train
+          PROFDATA="$(find "$CROOT" -type f -name llvm-profdata -perm -111 | head -1)"
+          test -n "$PROFDATA"
+          mapfile -t PROFS < <(find /tmp/icx -type f -name '*.profraw' -print)
+          test "${#PROFS[@]}" -gt 0
+          "$PROFDATA" merge -o /tmp/icx/pgo.profdata "${PROFS[@]}"
+          "$ICX" "${BASE[@]}" -fprofile-use=/tmp/icx/pgo.profdata \
+            -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_icx_pgo \
+            -Dexp53_n2_fused_u4_038_frozen=exp53_icx_pgo_tail \
+            -c "$SRC" -o /tmp/icx/pgo.o
+
+          OBJS=(frozen pref0 pref1 pref3 pref5 throughput gshuffle gnoshuffle omp unroll nounroll align32 align64 dynalign native lto pgo unrolljam nostream)
+          OBJPATHS=(); for x in "${OBJS[@]}"; do OBJPATHS+=("/tmp/icx/$x.o"); done
+          "$ICPX" -std=c++17 "${BASE[@]}" -flto -I"$MKLROOT/include" \
+            bench_exp53_icx_toolchain_sweep_0100_1400.cpp "${OBJPATHS[@]}" \
+            -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" \
+            -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/icx/bench
+
+          objdump -d -Mintel /tmp/icx/bench > /tmp/icx/all.asm
+          nm -S --size-sort /tmp/icx/bench > /tmp/icx/nm.txt
+          python3 - <<'PY' > /tmp/icx/asm_audit.txt
+          import re
+          names=['frozen','pref0','pref1','pref3','pref5','throughput','gshuffle','gnoshuffle','omp','unroll','nounroll','align32','align64','dynalign','native','lto','pgo','unrolljam','nostream']
+          asm=open('/tmp/icx/all.asm').read().splitlines()
+          blocks={n:[] for n in names}; cur=None
+          for line in asm:
+              m=re.search(r'<([^>]+)>:',line)
+              if m:
+                  lab=m.group(1)
+                  cur=next((n for n in names if lab=='exp53_icx_'+n),None)
+              elif cur: blocks[cur].append(line)
+          sizes={}
+          for line in open('/tmp/icx/nm.txt'):
+              p=line.split()
+              if len(p)>=4 and p[-1].startswith('exp53_icx_'):
+                  n=p[-1][len('exp53_icx_'):]
+                  if n in blocks:
+                      try:sizes[n]=int(p[1],16)
+                      except:pass
+          for n in names:
+              b='\n'.join(blocks[n]).lower()
+              print('ASM stack=%s bytes=%d lines=%d gather=%d prefetch=%d vfmadd=%d vfnmadd=%d vmulpd=%d vmovupd=%d vmovapd=%d stack_refs=%d' % (
+                  n,sizes.get(n,0),len(blocks[n]),b.count('gather'),b.count('prefetch'),b.count('vfmadd'),b.count('vfnmadd'),b.count('vmulpd'),b.count('vmovupd'),b.count('vmovapd'),b.count('[rsp')+b.count('[rbp')))
+          PY
+
+          "$ICX" "${BASE[@]}" -qopt-report=5 -qopt-report-file=/tmp/icx/frozen_opt.yaml \
+            -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_icx_report \
+            -Dexp53_n2_fused_u4_038_frozen=exp53_icx_report_tail \
+            -c "$SRC" -o /tmp/icx/report.o || true
+
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          {
+            echo "CPU=$MODEL"
+            echo "HEAD=$(git rev-parse HEAD)"
+            "$ICPX" --version | head -1
+            echo "RANGE=100..1400 step50 domains=unit,mid"
+            echo "MATH=frozen EXP53 source unchanged; only compiler/toolchain options vary"
+            cat /tmp/icx/asm_audit.txt
+          } > /tmp/icx/meta.txt
+
+      - name: Benchmark frozen source under ICX toolchain variants
+        if: steps.cpu.outputs.eligible == '1'
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW=/tmp/icx/raw.txt
+          OUT=/tmp/icx/results.txt
+          : > "$RAW"
+          cat /tmp/icx/meta.txt | tee "$OUT"
+          for rep in 1 2 3 4 5; do
+            order="$(python3 - "$rep" <<'PY'
+          import sys
+          xs='frozen pref0 pref1 pref3 pref5 throughput gshuffle gnoshuffle omp unroll nounroll align32 align64 dynalign native lto pgo unrolljam nostream intel'.split()
+          r=int(sys.argv[1]); k={1:0,2:0,3:7,4:11,5:13}[r]
+          xs=xs[k:]+xs[:k]
+          if r in (2,4): xs=list(reversed(xs))
+          print(' '.join(xs))
+          PY
+          )"
+            if (( rep % 2 == 0 )); then rev=1; else rev=''; fi
+            echo "REP=$rep ORDER=$order" | tee -a "$RAW"
+            for s in $order; do
+              SWEEP_REVERSE=$rev taskset -c 0 /tmp/icx/bench "$s" | tee -a "$RAW"
+            done
+          done
+
+          set +e
+          python3 - <<'PY' | tee -a "$OUT"
+          import re,statistics,sys
+          from collections import defaultdict
+          stacks=('frozen','pref0','pref1','pref3','pref5','throughput','gshuffle','gnoshuffle','omp','unroll','nounroll','align32','align64','dynalign','native','lto','pgo','unrolljam','nostream','intel')
+          cand=stacks[1:-1]
+          d=defaultdict(list); checks=defaultdict(list)
+          rp=re.compile(r'RESULT stack=(\w+) domain=(unit|mid) n=(\d+) calls=(\d+) ns=([0-9.]+)')
+          rc=re.compile(r'CHECK stack=(\w+) domain=(unit|mid) n=(\d+) bitdiff=(\d+)')
+          for line in open('/tmp/icx/raw.txt'):
+              m=rp.search(line)
+              if m:d[(m.group(1),m.group(2),int(m.group(3)))].append(float(m.group(5)))
+              z=rc.search(line)
+              if z:checks[z.group(1)].append(int(z.group(4)))
+          missing=[]
+          med={}
+          for s in stacks:
+              for dom in ('unit','mid'):
+                  for n in range(100,1401,50):
+                      a=d[(s,dom,n)]
+                      if len(a)!=5: missing.append((s,dom,n,len(a)))
+                      elif a: med[(s,dom,n)]=statistics.median(a)
+          if missing:
+              print('MISSING',missing[:20])
+              sys.exit(2)
+          wins={s:0 for s in stacks}
+          for dom in ('unit','mid'):
+              print('CATEGORY domain='+dom)
+              for n in range(100,1401,50):
+                  vals={s:med[(s,dom,n)] for s in stacks}
+                  best=min(vals,key=vals.get); wins[best]+=1
+                  print('FINAL domain=%s n=%d '%(dom,n)+' '.join('%s_ns=%.9f'%(s,vals[s]) for s in stacks)+' best='+best)
+          print('WINS '+' '.join('%s=%d'%(s,wins[s]) for s in stacks))
+          bad=False
+          for s in cand:
+              fr=[]; ir=[]; wf=0; wi=0
+              for dom in ('unit','mid'):
+                  for n in range(100,1401,50):
+                      v=med[(s,dom,n)]; f=med[('frozen',dom,n)]; i=med[('intel',dom,n)]
+                      fr.append(f/v); ir.append(i/v); wf+=v<f; wi+=v<i
+              bitmax=max(checks[s]) if checks[s] else -1
+              if bitmax!=0: bad=True
+              print('SUMMARY stack=%s median_frozen_over=%.6f median_intel_over=%.6f wins_vs_frozen=%d/54 wins_vs_intel=%d/54 bitdiff_max=%d' %
+                    (s,statistics.median(fr),statistics.median(ir),wf,wi,bitmax))
+          print('CORRECT bitdiff_max=%d' % max([max(v) for v in checks.values() if v] or [-1]))
+          if bad: sys.exit(1)
+          PY
+          RC=${PIPESTATUS[0]}
+          set -e
+          exit "$RC"
+
+      - name: Upload ICX toolchain evidence
+        if: always() && steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-icx-toolchain-${{ matrix.shard }}
+          path: |
+            /tmp/icx/build.txt
+            /tmp/icx/meta.txt
+            /tmp/icx/results.txt
+            /tmp/icx/raw.txt
+            /tmp/icx/all.asm
+            /tmp/icx/asm_audit.txt
+            /tmp/icx/frozen_opt.yaml
+            /tmp/icx/pgo.profdata
