@@ -1,0 +1,75 @@
+name: EXP53 Component Dependencies Cache
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/exp53-component-dependencies-cache.yml'
+
+jobs:
+  seed-cache:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore component dependency cache
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/exp53-component-deps
+          key: exp53-component-deps-ubuntu24-x86_64-xnn-b9b1cec0-v1
+
+      - name: Fetch pinned component dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/home/runner/exp53-component-deps
+          mkdir -p "$ROOT"
+
+          git clone --filter=blob:none https://github.com/gottingen/turbo.git "$ROOT/turbo"
+          git -C "$ROOT/turbo" checkout 9b212dedfaa4d4e08a854776e1ddaca7d746444c
+
+          git clone --filter=blob:none https://github.com/google/highway.git "$ROOT/highway"
+          git -C "$ROOT/highway" checkout 2607d3b5b0113992fe84d3848859eae13b3b52c1
+
+          git clone --filter=blob:none https://github.com/fastflow/fastflow.git "$ROOT/fastflow"
+          git -C "$ROOT/fastflow" checkout d476f66ab924d8d122f54b4b90aee00ef979aea8
+
+          git clone --recursive https://github.com/google/XNNPACK.git "$ROOT/xnnpack"
+          git -C "$ROOT/xnnpack" checkout b9b1cec0d2c62f1c3c0e1a590f4a42ddab309719
+          git -C "$ROOT/xnnpack" submodule update --init --recursive
+
+      - name: Build XNNPACK and static dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/home/runner/exp53-component-deps
+          cmake -S "$ROOT/xnnpack" -B "$ROOT/xnn-build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DXNNPACK_BUILD_TESTS=OFF \
+            -DXNNPACK_BUILD_BENCHMARKS=OFF \
+            -DXNNPACK_BUILD_ALL_MICROKERNELS=OFF \
+            -DXNNPACK_LIBRARY_TYPE=static
+          cmake --build "$ROOT/xnn-build" --target XNNPACK pthreadpool cpuinfo -j2
+
+      - name: Verify complete reusable cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/home/runner/exp53-component-deps
+          test "$(git -C "$ROOT/turbo" rev-parse HEAD)" = 9b212dedfaa4d4e08a854776e1ddaca7d746444c
+          test "$(git -C "$ROOT/highway" rev-parse HEAD)" = 2607d3b5b0113992fe84d3848859eae13b3b52c1
+          test "$(git -C "$ROOT/fastflow" rev-parse HEAD)" = d476f66ab924d8d122f54b4b90aee00ef979aea8
+          test "$(git -C "$ROOT/xnnpack" rev-parse HEAD)" = b9b1cec0d2c62f1c3c0e1a590f4a42ddab309719
+          find "$ROOT/xnn-build" -type f -name 'libXNNPACK.a' -print -quit | grep -q .
+          find "$ROOT/xnn-build" -type f -name 'libpthreadpool.a' -print -quit | grep -q .
+          find "$ROOT/xnn-build" -type f -name 'libcpuinfo.a' -print -quit | grep -q .
+          find "$ROOT" -type f -name pthreadpool.h -print -quit | grep -q .
+          {
+            echo "CACHE_KEY=exp53-component-deps-ubuntu24-x86_64-xnn-b9b1cec0-v1"
+            echo "CACHE_HIT=${{ steps.deps-cache.outputs.cache-hit }}"
+            find "$ROOT/xnn-build" -type f \( -name 'libXNNPACK.a' -o -name 'libpthreadpool.a' -o -name 'libcpuinfo.a' \) -print
+          }
+
