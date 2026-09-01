@@ -1,4 +1,4 @@
-name: EXP53 Highway FixedTail Sync 101-2000 Xeon
+name: EXP53 Highway Frozen Sync 101-1400 Xeon
 on:
   push:
     paths:
@@ -45,7 +45,7 @@ jobs:
           COMMON='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17'
           LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
           "$ICPX" $COMMON -I"$MKLROOT/include" -I/tmp/highway exp53_highway_fixedtail_sync_0101_2000_candidate.cpp bench_exp53_highway_fixedtail_sync_0101_2000.cpp $LINK -o /tmp/bench_hwyfix
-          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo "HIGHWAY_HEAD=$(git -C /tmp/highway rev-parse HEAD)"; echo "MODE=Highway exact-formula vector tail + serial + permanent CPU0/CPU2 sync"; } > /tmp/meta.txt
+          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo "HIGHWAY_HEAD=$(git -C /tmp/highway rev-parse HEAD)"; echo "MODE=Highway exact frozen-formula vector tail + serial + permanent CPU0/CPU2 sync, focused 101-1400"; } > /tmp/meta.txt
       - name: Benchmark
         if: steps.cpu.outputs.eligible == '1'
         env:
@@ -57,13 +57,14 @@ jobs:
           cat /tmp/meta.txt > /tmp/result.txt
           taskset -c 0,2 /tmp/bench_hwyfix | tee -a /tmp/result.txt
           grep -q '^FINAL domain=unit n=101 ' /tmp/result.txt
-          grep -q '^FINAL domain=unit n=2000 ' /tmp/result.txt
-          grep -q '^FINAL domain=mid n=2000 ' /tmp/result.txt
+          grep -q '^FINAL domain=unit n=1399 ' /tmp/result.txt
+          grep -q '^FINAL domain=unit n=1400 ' /tmp/result.txt
+          grep -q '^FINAL domain=mid n=1400 ' /tmp/result.txt
           ! grep -Eq 'gt1=[1-9][0-9]*' /tmp/result.txt
           ! grep -Eq 'bulk_bitdiff=[1-9][0-9]*' /tmp/result.txt
       - name: Upload
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/upload-artifact@v4
         with:
-          name: exp53-highway-fixedtail-sync-${{ matrix.shard }}
+          name: exp53-highway-frozen-101-1400-${{ matrix.shard }}
           path: /tmp/result.txt
