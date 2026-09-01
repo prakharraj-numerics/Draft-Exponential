@@ -1,0 +1,180 @@
+name: EXP53 Fine Process Map V2 100-1400 Xeon
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/exp53-fine-process-map-v2.yml'
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Restore component dependencies
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/exp53-component-deps
+          key: exp53-component-deps-ubuntu24-x86_64-xnn-b9b1cec0-v1
+          fail-on-cache-miss: true
+      - name: Expose deps
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          ROOT=/home/runner/exp53-component-deps
+          ln -s "$ROOT/turbo" /tmp/turbo
+          ln -s "$ROOT/highway" /tmp/highway
+          ln -s "$ROOT/fastflow" /tmp/fastflow
+          ln -s "$ROOT/xnnpack" /tmp/xnnpack
+          ln -s "$ROOT/xnn-build" /tmp/xnn-build
+      - name: Generate fine microbenchmarks
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fine2
+          cat > /tmp/fine2/common.hpp <<'EOF'
+          #pragma once
+          #include <algorithm>
+          #include <chrono>
+          #include <cstdint>
+          #include <cstdlib>
+          #include <iomanip>
+          #include <iostream>
+          #include <vector>
+          static inline double med(std::vector<double> v){std::sort(v.begin(),v.end());return v[v.size()/2];}
+          template<class F> static double bench(F f,size_t denom,size_t calls,int reps=11){for(int i=0;i<24;i++)f();std::vector<double>v;for(int r=0;r<reps;r++){auto a=std::chrono::steady_clock::now();for(size_t k=0;k<calls;k++)f();auto b=std::chrono::steady_clock::now();v.push_back(std::chrono::duration<double,std::nano>(b-a).count()/calls/denom);}return med(v);}
+          static inline const std::vector<size_t>& sizes(){static const std::vector<size_t>s={100,125,160,192,224,256,320,384,448,512,640,768,896,1024,1152,1280,1400};return s;}
+          EOF
+          cat > /tmp/fine2/simd.cpp <<'EOF'
+          #include "common.hpp"
+          #include <immintrin.h>
+          #include "turbo/simd/simd.h"
+          #define HWY_COMPILE_ONLY_STATIC
+          #include "hwy/highway.h"
+          namespace ts=turbo::simd; namespace hn=hwy::HWY_NAMESPACE;
+          alignas(64) static double in[1408],out[1408]; alignas(64) static int64_t idx[1408],tab[128]; static volatile double sink=0;
+          static void init(){for(size_t i=0;i<1408;i++){in[i]=0.001+(i%127)/131.0;idx[i]=i&127;}for(int i=0;i<128;i++)tab[i]=0x3ff0000000000000LL+i;}
+          #define NO __attribute__((noinline))
+          NO static void n_load(size_t n){__m512d a=_mm512_setzero_pd();for(size_t i=0;i+8<=n;i+=8)a=_mm512_add_pd(a,_mm512_loadu_pd(in+i));alignas(64)double q[8];_mm512_store_pd(q,a);sink+=q[0];}
+          NO static void t_load(size_t n){using D=ts::batch<double>;D a(0.0);for(size_t i=0;i+8<=n;i+=8)a+=D::load_unaligned(in+i);alignas(64)double q[8];a.store_unaligned(q);sink+=q[0];}
+          NO static void h_load(size_t n){const hn::FixedTag<double,8>d;auto a=hn::Zero(d);for(size_t i=0;i+8<=n;i+=8)a=hn::Add(a,hn::LoadU(d,in+i));alignas(64)double q[8];hn::Store(a,d,q);sink+=q[0];}
+          NO static void n_store(size_t n){auto a=_mm512_set1_pd(1.25);for(size_t i=0;i+8<=n;i+=8)_mm512_storeu_pd(out+i,a);sink+=out[0];}
+          NO static void t_store(size_t n){using D=ts::batch<double>;D a(1.25);for(size_t i=0;i+8<=n;i+=8)a.store_unaligned(out+i);sink+=out[0];}
+          NO static void h_store(size_t n){const hn::FixedTag<double,8>d;auto a=hn::Set(d,1.25);for(size_t i=0;i+8<=n;i+=8)hn::StoreU(a,d,out+i);sink+=out[0];}
+          NO static void n_index(size_t n){auto inv=_mm512_set1_pd(184.6649652337873),magic=_mm512_set1_pd(0x1.8p52);__m512i a=_mm512_setzero_si512();for(size_t i=0;i+8<=n;i+=8){auto x=_mm512_loadu_pd(in+i);auto b=_mm512_fmadd_pd(x,inv,magic);auto k=_mm512_sub_epi64(_mm512_castpd_si512(b),_mm512_set1_epi64(0x4338000000000000LL));a=_mm512_xor_si512(a,_mm512_and_epi64(k,_mm512_set1_epi64(127)));}alignas(64)int64_t q[8];_mm512_store_si512(q,a);sink+=q[0];}
+          NO static void t_index(size_t n){using D=ts::batch<double>;using I=ts::batch<int64_t>;D inv(184.6649652337873),magic(0x1.8p52);I a(0),mb((int64_t)0x4338000000000000LL),m(127);for(size_t i=0;i+8<=n;i+=8){D x=D::load_unaligned(in+i);D b=ts::fma(x,inv,magic);I k=ts::bitwise_cast<int64_t>(b)-mb;a=a^(k&m);}alignas(64)int64_t q[8];a.store_unaligned(q);sink+=q[0];}
+          NO static void h_index(size_t n){const hn::FixedTag<double,8>d;const hn::RebindToSigned<decltype(d)>di;auto inv=hn::Set(d,184.6649652337873);auto magic=hn::Set(d,0x1.8p52);auto mb=hn::Set(di,(int64_t)0x4338000000000000LL);auto m=hn::Set(di,(int64_t)127);auto a=hn::Zero(di);for(size_t i=0;i+8<=n;i+=8){auto x=hn::LoadU(d,in+i);auto b=hn::MulAdd(x,inv,magic);auto k=hn::Sub(hn::BitCast(di,b),mb);a=hn::Xor(a,hn::And(k,m));}alignas(64) int64_t q[8];hn::Store(a,di,q);sink+=q[0];}
+          NO static void n_gather(size_t n){__m512i a=_mm512_setzero_si512();for(size_t i=0;i+8<=n;i+=8){auto j=_mm512_loadu_si512((void*)(idx+i));a=_mm512_xor_si512(a,_mm512_i64gather_epi64(j,tab,8));}alignas(64)int64_t q[8];_mm512_store_si512(q,a);sink+=q[0];}
+          NO static void t_gather(size_t n){using I=ts::batch<int64_t>;I a(0);for(size_t i=0;i+8<=n;i+=8){I j=I::load_unaligned(idx+i);a=a^I::gather(tab,j);}alignas(64)int64_t q[8];a.store_unaligned(q);sink+=q[0];}
+          NO static void h_gather(size_t n){const hn::FixedTag<int64_t,8>d;auto a=hn::Zero(d);for(size_t i=0;i+8<=n;i+=8){auto j=hn::LoadU(d,idx+i);a=hn::Xor(a,hn::GatherIndex(d,tab,j));}alignas(64) int64_t q[8];hn::Store(a,d,q);sink+=q[0];}
+          NO static void n_reduce(size_t n){auto a=_mm512_set1_pd(.005),b=_mm512_set1_pd(.00003),c=_mm512_set1_pd(.0000002),k=_mm512_set1_pd(3.0);for(size_t i=0;i+8<=n;i+=8){auto x=_mm512_loadu_pd(in+i);x=_mm512_fnmadd_pd(k,a,x);x=_mm512_fnmadd_pd(k,b,x);x=_mm512_fnmadd_pd(k,c,x);_mm512_storeu_pd(out+i,x);}sink+=out[0];}
+          NO static void t_reduce(size_t n){using D=ts::batch<double>;D a(.005),b(.00003),c(.0000002),k(3.0);for(size_t i=0;i+8<=n;i+=8){D x=D::load_unaligned(in+i);x=ts::fnma(k,a,x);x=ts::fnma(k,b,x);x=ts::fnma(k,c,x);x.store_unaligned(out+i);}sink+=out[0];}
+          NO static void h_reduce(size_t n){const hn::FixedTag<double,8>d;auto a=hn::Set(d,.005),b=hn::Set(d,.00003),c=hn::Set(d,.0000002),k=hn::Set(d,3.0);for(size_t i=0;i+8<=n;i+=8){auto x=hn::LoadU(d,in+i);x=hn::NegMulAdd(k,a,x);x=hn::NegMulAdd(k,b,x);x=hn::NegMulAdd(k,c,x);hn::StoreU(x,d,out+i);}sink+=out[0];}
+          NO static void n_poly(size_t n){auto q1=_mm512_set1_pd(.25),q2=_mm512_set1_pd(.052),q3=_mm512_set1_pd(.0078),q4=_mm512_set1_pd(.00085),one=_mm512_set1_pd(1.0);for(size_t i=0;i+8<=n;i+=8){auto r=_mm512_loadu_pd(in+i),h=_mm512_fmadd_pd(q4,r,q3);h=_mm512_fmadd_pd(h,r,q2);h=_mm512_fmadd_pd(h,r,q1);h=_mm512_fmadd_pd(h,r,one);_mm512_storeu_pd(out+i,h);}sink+=out[0];}
+          NO static void t_poly(size_t n){using D=ts::batch<double>;D q1(.25),q2(.052),q3(.0078),q4(.00085),one(1.0);for(size_t i=0;i+8<=n;i+=8){D r=D::load_unaligned(in+i),h=ts::fma(q4,r,q3);h=ts::fma(h,r,q2);h=ts::fma(h,r,q1);h=ts::fma(h,r,one);h.store_unaligned(out+i);}sink+=out[0];}
+          NO static void h_poly(size_t n){const hn::FixedTag<double,8>d;auto q1=hn::Set(d,.25),q2=hn::Set(d,.052),q3=hn::Set(d,.0078),q4=hn::Set(d,.00085),one=hn::Set(d,1.0);for(size_t i=0;i+8<=n;i+=8){auto r=hn::LoadU(d,in+i),h=hn::MulAdd(q4,r,q3);h=hn::MulAdd(h,r,q2);h=hn::MulAdd(h,r,q1);h=hn::MulAdd(h,r,one);hn::StoreU(h,d,out+i);}sink+=out[0];}
+          NO static void n_square(size_t n){for(size_t i=0;i+8<=n;i+=8){auto h=_mm512_loadu_pd(in+i);_mm512_storeu_pd(out+i,_mm512_mul_pd(h,h));}sink+=out[0];}
+          NO static void t_square(size_t n){using D=ts::batch<double>;for(size_t i=0;i+8<=n;i+=8){D h=D::load_unaligned(in+i);(h*h).store_unaligned(out+i);}sink+=out[0];}
+          NO static void h_square(size_t n){const hn::FixedTag<double,8>d;for(size_t i=0;i+8<=n;i+=8){auto h=hn::LoadU(d,in+i);hn::StoreU(hn::Mul(h,h),d,out+i);}sink+=out[0];}
+          NO static void n_erel(size_t n){auto one=_mm512_set1_pd(1.0),s=_mm512_set1_pd(1.01);for(size_t i=0;i+8<=n;i+=8){auto r=_mm512_loadu_pd(in+i);auto er=_mm512_fmadd_pd(r,s,one);auto el=_mm512_fmadd_pd(r,s,_mm512_sub_pd(one,er));_mm512_storeu_pd(out+i,el);}sink+=out[0];}
+          NO static void t_erel(size_t n){using D=ts::batch<double>;D one(1.0),s(1.01);for(size_t i=0;i+8<=n;i+=8){D r=D::load_unaligned(in+i),er=ts::fma(r,s,one),el=ts::fma(r,s,one-er);el.store_unaligned(out+i);}sink+=out[0];}
+          NO static void h_erel(size_t n){const hn::FixedTag<double,8>d;auto one=hn::Set(d,1.0),s=hn::Set(d,1.01);for(size_t i=0;i+8<=n;i+=8){auto r=hn::LoadU(d,in+i),er=hn::MulAdd(r,s,one),el=hn::MulAdd(r,s,hn::Sub(one,er));hn::StoreU(el,d,out+i);}sink+=out[0];}
+          NO static void n_scalebits(size_t n){__m512i a=_mm512_setzero_si512();for(size_t i=0;i+8<=n;i+=8){auto t=_mm512_loadu_si512((void*)(idx+i));auto q=_mm512_slli_epi64(t,52);a=_mm512_xor_si512(a,_mm512_add_epi64(q,_mm512_set1_epi64(0x3ff0000000000000LL)));}alignas(64)int64_t z[8];_mm512_store_si512(z,a);sink+=z[0];}
+          NO static void t_scalebits(size_t n){using I=ts::batch<int64_t>;I a(0),base((int64_t)0x3ff0000000000000LL);for(size_t i=0;i+8<=n;i+=8){I t=I::load_unaligned(idx+i);a=a^(base+(t<<52));}alignas(64)int64_t z[8];a.store_unaligned(z);sink+=z[0];}
+          NO static void h_scalebits(size_t n){const hn::FixedTag<int64_t,8>d;auto a=hn::Zero(d);auto base=hn::Set(d,(int64_t)0x3ff0000000000000LL);for(size_t i=0;i+8<=n;i+=8){auto t=hn::LoadU(d,idx+i);a=hn::Xor(a,hn::Add(base,hn::ShiftLeft<52>(t)));}alignas(64) int64_t z[8];hn::Store(a,d,z);sink+=z[0];}
+          NO static void n_final(size_t n){auto sc=_mm512_set1_pd(1.031),el=_mm512_set1_pd(.0001);for(size_t i=0;i+8<=n;i+=8){auto er=_mm512_loadu_pd(in+i),ph=_mm512_mul_pd(er,sc),y=_mm512_fmadd_pd(el,sc,ph);_mm512_storeu_pd(out+i,y);}sink+=out[0];}
+          NO static void t_final(size_t n){using D=ts::batch<double>;D sc(1.031),el(.0001);for(size_t i=0;i+8<=n;i+=8){D er=D::load_unaligned(in+i),ph=er*sc,y=ts::fma(el,sc,ph);y.store_unaligned(out+i);}sink+=out[0];}
+          NO static void h_final(size_t n){const hn::FixedTag<double,8>d;auto sc=hn::Set(d,1.031),el=hn::Set(d,.0001);for(size_t i=0;i+8<=n;i+=8){auto er=hn::LoadU(d,in+i),ph=hn::Mul(er,sc),y=hn::MulAdd(el,sc,ph);hn::StoreU(y,d,out+i);}sink+=out[0];}
+          int main(){init();std::cout<<std::fixed<<std::setprecision(9);struct P{const char*n;void(*a)(size_t);void(*b)(size_t);void(*c)(size_t);}p[]={{"load",n_load,t_load,h_load},{"store",n_store,t_store,h_store},{"index_generation",n_index,t_index,h_index},{"gather",n_gather,t_gather,h_gather},{"range_reduce_3fma",n_reduce,t_reduce,h_reduce},{"poly_4fma",n_poly,t_poly,h_poly},{"square",n_square,t_square,h_square},{"er_el_2fma",n_erel,t_erel,h_erel},{"scale_bit_reconstruct",n_scalebits,t_scalebits,h_scalebits},{"final_mul_fma",n_final,t_final,h_final}};for(auto&x:p)for(size_t n:sizes()){size_t body=(n/8)*8,calls=std::max<size_t>(300,300000/body);for(auto y:{std::pair<const char*,void(*)(size_t)>{"native",x.a},{"turbo",x.b},{"highway",x.c}})std::cout<<"PROCESS name="<<x.n<<" lib="<<y.first<<" n="<<n<<" ns="<<bench([&]{y.second(body);},body,calls)<<"\n";}std::cerr<<sink<<"\n";}
+          EOF
+          cat > /tmp/fine2/sched.cpp <<'EOF'
+          #include "common.hpp"
+          #include <atomic>
+          #include <thread>
+          #include <immintrin.h>
+          #include <pthread.h>
+          #include <sched.h>
+          static inline void pin(int c){cpu_set_t s;CPU_ZERO(&s);CPU_SET(c,&s);pthread_setaffinity_np(pthread_self(),sizeof(s),&s);}
+          static volatile size_t sink=0;
+          static void split_only(size_t n){size_t full=n/32,sp=(full/2)*32;sink+=sp+(n-sp);}
+          static void pointer_setup(size_t n){static double a[1408],b[1408];size_t sp=((n/32)/2)*32;sink+=(a+sp-a)+(b+sp-b);}
+          class Probe{std::thread th;alignas(64)std::atomic<uint64_t>gen{0},seen{0},entered{0},donepub{0};std::atomic<bool>stop{false},ready{false};public:Probe(){pin(0);th=std::thread([&]{pin(2);ready.store(true,std::memory_order_release);uint64_t s=0;for(;;){uint64_t g;while((g=gen.load(std::memory_order_acquire))==s)_mm_pause();s=g;if(stop.load(std::memory_order_relaxed))return;seen.store(g,std::memory_order_release);entered.store(g,std::memory_order_release);donepub.store(g,std::memory_order_release);}});while(!ready.load(std::memory_order_acquire))_mm_pause();}~Probe(){stop.store(true);gen.fetch_add(1,std::memory_order_release);th.join();}void wait_seen(){auto g=gen.fetch_add(1,std::memory_order_release)+1;while(seen.load(std::memory_order_acquire)!=g)_mm_pause();}void wait_entry(){auto g=gen.fetch_add(1,std::memory_order_release)+1;while(entered.load(std::memory_order_acquire)!=g)_mm_pause();}void wait_done(){auto g=gen.fetch_add(1,std::memory_order_release)+1;while(donepub.load(std::memory_order_acquire)!=g)_mm_pause();}};
+          int main(){std::cout<<std::fixed<<std::setprecision(9);Probe p;for(size_t n:sizes()){std::cout<<"PROCESS name=split_arithmetic lib=custom2 n="<<n<<" ns="<<bench([&]{split_only(n);},1,200000)<<"\n";std::cout<<"PROCESS name=pointer_chunk_setup lib=custom2 n="<<n<<" ns="<<bench([&]{pointer_setup(n);},1,200000)<<"\n";std::cout<<"PROCESS name=task_publish_to_worker_seen lib=custom2 n="<<n<<" ns="<<bench([&]{p.wait_seen();},1,30000)<<"\n";std::cout<<"PROCESS name=task_publish_to_callback_entry lib=custom2 n="<<n<<" ns="<<bench([&]{p.wait_entry();},1,30000)<<"\n";std::cout<<"PROCESS name=full_cross_core_roundtrip lib=custom2 n="<<n<<" ns="<<bench([&]{p.wait_done();},1,30000)<<"\n";}std::cerr<<sink<<"\n";}
+          EOF
+          cat > /tmp/fine2/xnn.cpp <<'EOF'
+          #include "common.hpp"
+          #include <pthreadpool.h>
+          struct C{alignas(64)volatile size_t s[64];};static void one(void*p,size_t i){((C*)p)->s[i&63]++;}static void tile(void*p,size_t st,size_t z){((C*)p)->s[(st/32)&63]+=z;}
+          int main(){auto pool=pthreadpool_create(2);if(!pool)return 2;C c{};std::cout<<std::fixed<<std::setprecision(9);for(size_t n:sizes()){std::cout<<"PROCESS name=public_dispatch_barrier lib=xnnpack n="<<n<<" ns="<<bench([&]{pthreadpool_parallelize_1d(pool,one,&c,2,0);},1,30000)<<"\n";size_t body=(n/32)*32,t=std::max<size_t>(32,((body/2)/32)*32);std::cout<<"PROCESS name=public_partition_dispatch lib=xnnpack n="<<n<<" ns="<<bench([&]{pthreadpool_parallelize_1d_tile_1d(pool,tile,&c,body,t,0);},1,20000)<<"\n";}pthreadpool_destroy(pool);}
+          EOF
+          cat > /tmp/fine2/ff.cpp <<'EOF'
+          #include "common.hpp"
+          #include <ff/parallel_for.hpp>
+          int main(){ff::ParallelFor pf(2,true,true);alignas(64)volatile size_t s[2]{};std::cout<<std::fixed<<std::setprecision(9);for(size_t n:sizes()){std::cout<<"PROCESS name=public_dispatch_barrier lib=fastflow n="<<n<<" ns="<<bench([&]{pf.parallel_for_static(0L,2L,1L,0L,[&](long w){s[w]++;},2L);},1,30000)<<"\n";size_t b=n/32;std::cout<<"PROCESS name=public_partition_dispatch lib=fastflow n="<<n<<" ns="<<bench([&]{pf.parallel_for_static(0L,2L,1L,0L,[&](long w){size_t b0=(b*w)/2,b1=(b*(w+1))/2;s[w]+=32*(b1-b0);},2L);},1,20000)<<"\n";}}
+          EOF
+      - name: Build
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          CXX='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17'
+          "$ICPX" $CXX -I/tmp/fine2 -I/tmp/turbo -I/tmp/highway /tmp/fine2/simd.cpp -o /tmp/fine2/simd
+          "$ICPX" $CXX -I/tmp/fine2 /tmp/fine2/sched.cpp -lpthread -o /tmp/fine2/sched
+          PA="$(find -L /tmp/xnn-build -type f -name libpthreadpool.a -print -quit)"; PI="$(find -L /tmp/xnn-build -type f -name pthreadpool.h -printf '%h\n' -quit)"; if [[ -z "$PI" ]]; then PI="$(find -L /tmp/xnnpack -type f -name pthreadpool.h -printf '%h\n' -quit)"; fi
+          "$ICPX" $CXX -I/tmp/fine2 -I"$PI" /tmp/fine2/xnn.cpp "$PA" -lpthread -o /tmp/fine2/xnn
+          "$ICPX" $CXX -I/tmp/fine2 -I/tmp/fastflow /tmp/fine2/ff.cpp -lpthread -o /tmp/fine2/ff
+      - name: Run fine map
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=/tmp/fine2/raw.txt; : > "$OUT"
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee -a "$OUT"
+          taskset -c 0 /tmp/fine2/simd | tee -a "$OUT"
+          taskset -c 0,2 /tmp/fine2/sched | tee -a "$OUT"
+          taskset -c 0,2 /tmp/fine2/xnn | tee -a "$OUT"
+          taskset -c 0,2 /tmp/fine2/ff | tee -a "$OUT"
+      - name: Aggregate
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib,statistics
+          rows=[]
+          for ln in pathlib.Path('/tmp/fine2/raw.txt').read_text().splitlines():
+            if ln.startswith('PROCESS '):
+              kv=dict(x.split('=',1) for x in ln.split()[1:]); rows.append((kv['name'],kv['lib'],int(kv['n']),float(kv['ns'])))
+          out=['EXP53 FINE PROCESS MAP V2']
+          for name in sorted({r[0] for r in rows}):
+            meds={l:statistics.median(t for p,ll,n,t in rows if p==name and ll==l) for l in {r[1] for r in rows if r[0]==name}}
+            w=min(meds,key=meds.get); out.append(f'PROCESS_WINNER name={name} winner={w} median_ns={meds[w]:.9f} ranking='+','.join(f'{k}:{meds[k]:.9f}' for k in sorted(meds,key=meds.get)))
+          pathlib.Path('/tmp/fine2/summary.txt').write_text('\n'.join(out)+'\n'); print('\n'.join(out))
+          PY
+      - name: Upload
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-fine-process-map-v2-${{ matrix.shard }}
+          path: |
+            /tmp/fine2/raw.txt
+            /tmp/fine2/summary.txt
