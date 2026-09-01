@@ -1,5 +1,5 @@
-// Experimental Alibaba MNN scheduling integration for EXP53, n=101..1400.
-// Production untouched. MNN supplies the persistent two-thread executor only;
+// Experimental Alibaba MNN helper-only scheduling integration for EXP53, n=101..1400.
+// Production untouched. MNN supplies only the persistent helper dispatch;
 // every transcendental arithmetic operation is the frozen EXP53 formula.
 #include "backend/cpu/ThreadPool.hpp"
 #include "exp53_highway_sync_1600_3000_constants_frozen.hpp"
@@ -8,7 +8,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <algorithm>
 
 namespace c = exp53_hwy_const_frozen;
 
@@ -23,18 +22,15 @@ static inline __m512d exp53_vec8_mnn(__m512d x) {
     const __m512d q2    = _mm512_set1_pd(c::Q2);
     const __m512d q3    = _mm512_set1_pd(c::Q3);
     const __m512d q4    = _mm512_set1_pd(c::Q4);
-
     __m512d biased = _mm512_fmadd_pd(x, inv, magic);
     __m512d k      = _mm512_sub_pd(biased, magic);
     __m512i kn     = _mm512_sub_epi64(_mm512_castpd_si512(biased), _mm512_set1_epi64((long long)c::MAGIC_BITS));
     __m512i j      = _mm512_and_si512(kn, _mm512_set1_epi64(127));
     __m512i q      = _mm512_srai_epi64(kn, 7);
     __m512i tb     = _mm512_i64gather_epi64(j, reinterpret_cast<const void*>(c::TAB128), 8);
-
     __m512d r = _mm512_fnmadd_pd(k, hi, x);
     r = _mm512_fnmadd_pd(k, mi, r);
     r = _mm512_fnmadd_pd(k, lo, r);
-
     __m512d h = _mm512_fmadd_pd(q4, r, q3);
     h = _mm512_fmadd_pd(h, r, q2);
     h = _mm512_fmadd_pd(h, r, q1);
@@ -42,7 +38,6 @@ static inline __m512d exp53_vec8_mnn(__m512d x) {
     __m512d s  = _mm512_mul_pd(h, h);
     __m512d er = _mm512_fmadd_pd(r, s, one);
     __m512d el = _mm512_fmadd_pd(r, s, _mm512_sub_pd(one, er));
-
     __m512i sb = _mm512_add_epi64(tb, _mm512_slli_epi64(q, 52));
     __m512d scale = _mm512_castsi512_pd(sb);
     __m512d ph = _mm512_mul_pd(er, scale);
@@ -61,9 +56,8 @@ static inline void exp53_range_mnn(double* out, const double* in, size_t n) {
         _mm512_storeu_pd(out + i + 16, exp53_vec8_mnn(x2));
         _mm512_storeu_pd(out + i + 24, exp53_vec8_mnn(x3));
     }
-    for (; i + 8 <= n; i += 8) {
+    for (; i + 8 <= n; i += 8)
         _mm512_storeu_pd(out + i, exp53_vec8_mnn(_mm512_loadu_pd(in + i)));
-    }
     if (i < n) {
         alignas(64) double ti[8] = {0,0,0,0,0,0,0,0};
         alignas(64) double to[8];
@@ -77,9 +71,7 @@ static inline void exp53_range_mnn(double* out, const double* in, size_t n) {
 static inline void pin_cpu2_once() {
     thread_local bool pinned = false;
     if (pinned) return;
-    cpu_set_t set;
-    CPU_ZERO(&set);
-    CPU_SET(2, &set);
+    cpu_set_t set; CPU_ZERO(&set); CPU_SET(2, &set);
     pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
     pinned = true;
 }
@@ -91,10 +83,9 @@ public:
         work_index_ = pool_->acquireWorkIndex();
         task_.second = 2;
         task_.first = [this](int tid) {
-            if (tid == 1) pin_cpu2_once();
-            const size_t b = (tid == 0) ? 0 : split_;
-            const size_t e = (tid == 0) ? split_ : n_;
-            if (e > b) exp53_range_mnn(out_ + b, in_ + b, e - b);
+            if (tid != 1) return;
+            pin_cpu2_once();
+            if (n_ > split_) exp53_range_mnn(out_ + split_, in_ + split_, n_ - split_);
         };
         pool_->active();
     }
@@ -108,7 +99,9 @@ public:
         helper = (helper / 32) * 32;
         size_t split = n - helper;
         split_ = (split / 32) * 32;
-        pool_->enqueue(&task_, work_index_);
+        pool_->enqueueHelperOnly(&task_, work_index_);
+        if (split_ > 0) exp53_range_mnn(out_, in_, split_);
+        pool_->waitHelperOnly(work_index_);
     }
 private:
     MNN::ThreadPool* pool_ = nullptr;
