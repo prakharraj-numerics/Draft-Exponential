@@ -1,0 +1,165 @@
+name: EXP53 PPLNN X86 101-1400 Xeon
+
+on:
+  push:
+    paths:
+      - 'exp53_pplnn_bridge.hpp'
+      - 'bench_exp53_pplnn_baseline_0101_1400.cpp'
+      - '.github/workflows/exp53-pplnn-x86-0101-1400.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    env:
+      MKL_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Fetch pinned OpenPPL PPLNN
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/OpenPPL/ppl.nn.git /tmp/pplnn
+          git -C /tmp/pplnn checkout bb84dc9952809b3a5a0036858a3d9f68af1c83d5
+          test "$(git -C /tmp/pplnn rev-parse HEAD)" = "bb84dc9952809b3a5a0036858a3d9f68af1c83d5"
+
+      - name: Inject our FP64 EXP53 into PPLNN x86 Exp operator
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          D=/tmp/pplnn/src/ppl/nn/engines/x86/kernels/onnx
+          cp exp53_pplnn_bridge.hpp "$D/"
+          cp exp53_highway_sync_1600_3000_constants_frozen.hpp "$D/"
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/pplnn/src/ppl/nn/engines/x86/kernels/onnx/exp_kernel.cc')
+          s=p.read_text()
+          s=s.replace('#include "ppl/kernel/x86/fp32/exp.h"', '#include "ppl/kernel/x86/fp32/exp.h"\n#include "ppl/nn/engines/x86/kernels/onnx/exp53_pplnn_bridge.hpp"')
+          old='''    if (data_type == ppl::common::DATATYPE_FLOAT32) {'''
+          new='''    if (data_type == ppl::common::DATATYPE_FLOAT64) {\n        exp53_pplnn::run(output->GetBufferPtr<double>(), input->GetBufferPtr<double>(),\n                         (size_t)input->GetShape()->CalcElementsIncludingPadding());\n        return ppl::common::RC_SUCCESS;\n    } else if (data_type == ppl::common::DATATYPE_FLOAT32) {'''
+          if old not in s: raise SystemExit('PPLNN exp kernel anchor not found')
+          p.write_text(s.replace(old,new,1))
+          PY
+          grep -n 'DATATYPE_FLOAT64\|exp53_pplnn' "$D/exp_kernel.cc"
+
+      - name: Build PPLNN x86 with Intel compiler
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CC=/opt/intel/oneapi/compiler/latest/bin/icx
+          export CXX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          cd /tmp/pplnn
+          ./build.sh -DPPLNN_USE_X86_64=ON -DPPLNN_ENABLE_PYTHON_API=OFF -DPPLNN_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+          find pplnn-build -type f -name pplnn -perm -111 -print
+
+      - name: Build frozen and Intel baseline
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          "$ICX" -O3 -xGRANITERAPIDS -fp-model=precise -std=c11 -c exp53_n2_vmstyle_u4_0381_frozen.c -o /tmp/frozen.o
+          "$ICPX" -O3 -xGRANITERAPIDS -fp-model=precise -std=c++17 -I"$MKLROOT/include" -c bench_exp53_pplnn_baseline_0101_1400.cpp -o /tmp/base.o
+          "$ICPX" /tmp/base.o /tmp/frozen.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/base
+
+      - name: Generate FP64 ONNX models and exact inputs
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet onnx numpy
+          mkdir -p /tmp/ppl_inputs
+          python3 - <<'PY'
+          import math, struct, pathlib
+          import numpy as np, onnx
+          from onnx import helper, TensorProto
+          sizes=[101,125,150,192,200,256,320,384,512,640,768,896,1024,1152,1200,1280,1344,1399,1400]
+          def sm(x):
+              x=(x+0x9e3779b97f4a7c15)&((1<<64)-1); x=((x^(x>>30))*0xbf58476d1ce4e5b9)&((1<<64)-1); x=((x^(x>>27))*0x94d049bb133111eb)&((1<<64)-1); return x^(x>>31)
+          def ur(h): return ((h>>11)+.5)/9007199254740992.0
+          root=pathlib.Path('/tmp/ppl_inputs')
+          for n in sizes:
+              X=helper.make_tensor_value_info('X',TensorProto.DOUBLE,[n]); Y=helper.make_tensor_value_info('Y',TensorProto.DOUBLE,[n])
+              node=helper.make_node('Exp',['X'],['Y'])
+              model=helper.make_model(helper.make_graph([node],f'exp53_{n}',[X],[Y]),opset_imports=[helper.make_opsetid('',13)])
+              model.ir_version=min(model.ir_version,9); onnx.save(model,root/f'exp_{n}.onnx')
+              for d,name in [(0,'unit'),(1,'mid')]:
+                  seed=0x243f6a8885a308d3 ^ (n<<19) ^ (d<<61)
+                  a=[]
+                  for i in range(n):
+                      q=ur(sm((seed + i*0x9e3779b97f4a7c15)&((1<<64)-1)))
+                      z=(1.000001+q*98.999998) if d else (2**-20+q*(1.-2**-19))
+                      a.append(-z if i&1 else z)
+                  np.asarray(a,dtype=np.float64).tofile(root/f'{name}_{n}.bin')
+          PY
+
+      - name: Benchmark PPLNN runtime and comparators
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PPL=$(find /tmp/pplnn/pplnn-build -type f -name pplnn -perm -111 | head -1)
+          test -n "$PPL"
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "PPLNN_HEAD=$(git -C /tmp/pplnn rev-parse HEAD)"
+            echo "PPLNN_BIN=$PPL"
+          } > /tmp/result.txt
+          taskset -c 0 /tmp/base | tee -a /tmp/result.txt
+          sizes='101 125 150 192 200 256 320 384 512 640 768 896 1024 1152 1200 1280 1344 1399 1400'
+          for domain in unit mid; do
+            for n in $sizes; do
+              echo "PPL_BEGIN domain=$domain n=$n" | tee -a /tmp/result.txt
+              LOG=$(/usr/bin/taskset -c 0 "$PPL" --use-x86 --onnx-model "/tmp/ppl_inputs/exp_${n}.onnx" --inputs "/tmp/ppl_inputs/${domain}_${n}.bin" --enable-profiling --min-profiling-seconds 0.20 --warmup-iterations 20 2>&1)
+              echo "$LOG" >> /tmp/result.txt
+              COST=$(echo "$LOG" | sed -nE 's/.*Average run costs?:[[:space:]]*([0-9.]+)[[:space:]]*ms.*/\1/p' | tail -1)
+              test -n "$COST"
+              python3 - "$domain" "$n" "$COST" <<'PY' | tee -a /tmp/result.txt
+          import sys
+          d,n,ms=sys.argv[1],int(sys.argv[2]),float(sys.argv[3])
+          print(f"PPL_FINAL domain={d} n={n} pplnn_ms={ms:.9f} pplnn_ns={ms*1e6/n:.9f}")
+          PY
+            done
+          done
+          grep -q '^PPL_FINAL domain=unit n=101 ' /tmp/result.txt
+          grep -q '^PPL_FINAL domain=unit n=1400 ' /tmp/result.txt
+          grep -q '^PPL_FINAL domain=mid n=1400 ' /tmp/result.txt
+
+      - name: Upload
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-pplnn-x86-101-1400-${{ matrix.shard }}
+          path: /tmp/result.txt
