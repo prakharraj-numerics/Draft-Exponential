@@ -3,7 +3,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#ifndef restrict
+#define restrict __restrict__
+#endif
 #include "exp53_n2_vmstyle_u4_0381_frozen.c"
+#undef restrict
 
 /* Experimental API-level VML integration.
    VML has no custom-kernel callback, so this keeps our reduction/table logic
