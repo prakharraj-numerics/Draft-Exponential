@@ -1,0 +1,168 @@
+name: EXP53 final shallow 4-batch production vs Intel HA
+
+on:
+  push:
+    paths:
+      - 'bench_exp53_final_shallow_4batches.cpp'
+      - '.github/workflows/exp53-final-shallow-4batches.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Restore VCL
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/vcl-exp53
+          key: exp53-vcl-dc6cb6cea60bb983314c33386f5f4a7fae5b7efb-v1
+
+      - name: Fetch pinned VCL on cache miss
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f /home/runner/vcl-exp53/vectorclass.h ]]; then
+            rm -rf /home/runner/vcl-exp53
+            git clone -q https://github.com/vectorclass/version2.git /home/runner/vcl-exp53
+            git -C /home/runner/vcl-exp53 checkout -q dc6cb6cea60bb983314c33386f5f4a7fae5b7efb
+          fi
+
+      - name: Restore Highway dependency
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/exp53-component-deps
+          key: exp53-component-deps-ubuntu24-x86_64-xnn-b9b1cec0-v1
+          fail-on-cache-miss: true
+
+      - name: Build canonical production benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/final4
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          HWY=/home/runner/exp53-component-deps/highway
+          "$ICPX" -std=c++17 $COMMON -Iproduction -I/home/runner/vcl-exp53 -c production/exp53_vcl_u2z_0100_frozen.cpp -o /tmp/final4/vcl.o
+          "$ICX" $COMMON -Iproduction -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/final4/nt.o
+          "$ICPX" -std=c++17 $COMMON -Iproduction -I"$HWY" -I"$MKLROOT/include" \
+            bench_exp53_final_shallow_4batches.cpp /tmp/final4/vcl.o /tmp/final4/nt.o \
+            -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed \
+            -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl \
+            -o /tmp/final4/bench
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "PRODUCTION_BLOB=$(git hash-object production/exp53_batch_production.hpp)"
+            echo "VCL_SHA=$(git -C /home/runner/vcl-exp53 rev-parse HEAD)"
+            echo "HIGHWAY_SHA=$(git -C "$HWY" rev-parse HEAD)"
+            echo "SIZES=50,750,2500,4000,10000,20000,60000,200000,2000000,4000000"
+            echo "INPUTS_PER_SIZE=4 exact: unit_pos,unit_neg,mid_pos,mid_neg"
+            echo "UNIT=(0,1)_and_(-1,0); MID=(1,100)_and_(-100,-1)"
+            echo "INTEL=vmdExp_VML_HA_mkl_sequential"
+            echo "PRODUCTION=canonical_production_default_temporal_dispatch"
+          } | tee /tmp/final4/build.txt
+
+      - name: Run final shallow benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          RAW=/tmp/final4/raw.txt
+          OUT=/tmp/final4/results.txt
+          : > "$RAW"
+          cat /tmp/final4/build.txt | tee "$OUT"
+          for rep in 1 2 3; do
+            if (( rep % 2 )); then
+              echo "BEGIN rep=$rep stack=ours" | tee -a "$RAW"
+              taskset -c 0 /tmp/final4/bench ours | tee -a "$RAW"
+              echo "BEGIN rep=$rep stack=intel" | tee -a "$RAW"
+              taskset -c 0 /tmp/final4/bench intel | tee -a "$RAW"
+            else
+              echo "BEGIN rep=$rep stack=intel" | tee -a "$RAW"
+              taskset -c 0 /tmp/final4/bench intel | tee -a "$RAW"
+              echo "BEGIN rep=$rep stack=ours" | tee -a "$RAW"
+              taskset -c 0 /tmp/final4/bench ours | tee -a "$RAW"
+            fi
+          done
+
+          python3 - <<'PY' | tee -a "$OUT"
+          import re, statistics
+          from collections import defaultdict
+          sizes=[50,750,2500,4000,10000,20000,60000,200000,2000000,4000000]
+          cases=['unit_pos','unit_neg','mid_pos','mid_neg']
+          p=re.compile(r'RESULT stack=(ours|intel) n=(\d+) case=(unit_pos|unit_neg|mid_pos|mid_neg) calls=(\d+) ns=([0-9.]+) maxulp=(\d+) gt2=(\d+)')
+          d=defaultdict(lambda:{'ns':[],'maxulp':[],'gt2':[]})
+          for line in open('/tmp/final4/raw.txt'):
+              m=p.search(line)
+              if not m: continue
+              k=(m.group(1),int(m.group(2)),m.group(3))
+              d[k]['ns'].append(float(m.group(5)))
+              d[k]['maxulp'].append(int(m.group(6)))
+              d[k]['gt2'].append(int(m.group(7)))
+          total_ours_wins=0
+          total_cells=0
+          ratios=[]
+          for n in sizes:
+              per={}
+              for c in cases:
+                  o=d[('ours',n,c)]; i=d[('intel',n,c)]
+                  if len(o['ns'])!=3 or len(i['ns'])!=3: raise SystemExit(f'missing n={n} case={c} ours={o} intel={i}')
+                  if max(o['gt2'])!=0: raise SystemExit(f'>2 ULP Intel cross-screen n={n} case={c}')
+                  on=statistics.median(o['ns']); inn=statistics.median(i['ns'])
+                  sp=inn/on
+                  per[c]=(on,inn,sp,max(o['maxulp']))
+                  total_cells += 1
+                  if on < inn: total_ours_wins += 1
+                  ratios.append(sp)
+                  print(f'FINAL n={n} case={c} ours={on:.9f} intel={inn:.9f} intel_over_ours={sp:.6f} winner={"OURS" if on<inn else "INTEL"} maxulp_cross={max(o["maxulp"])}')
+              up,un=per['unit_pos'],per['unit_neg']; mp,mn=per['mid_pos'],per['mid_neg']
+              uo=(up[0]+un[0])/2; ui=(up[1]+un[1])/2
+              mo=(mp[0]+mn[0])/2; mi=(mp[1]+mn[1])/2
+              ao=(uo+mo)/2; ai=(ui+mi)/2
+              print(f'SUMMARY_SIZE n={n} unit_ours={uo:.9f} unit_intel={ui:.9f} unit_speedup={ui/uo:.6f} mid_ours={mo:.9f} mid_intel={mi:.9f} mid_speedup={mi/mo:.6f} all4_ours={ao:.9f} all4_intel={ai:.9f} all4_speedup={ai/ao:.6f}')
+          print(f'OVERALL cells_ours_wins={total_ours_wins}/{total_cells} median_cell_intel_over_ours={statistics.median(ratios):.6f}')
+          PY
+
+      - name: Upload final shallow result
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-final-shallow-4batches-${{ matrix.shard }}
+          path: /tmp/final4
