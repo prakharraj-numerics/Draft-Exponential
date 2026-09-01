@@ -6,7 +6,9 @@
 // experiment includes it only to reuse its exact constants/table/tail code;
 // map restrict to the C++ spelling without modifying the frozen source itself.
 #define restrict __restrict__
+extern "C" {
 #include "exp53_n2_vmstyle_u4_0381_frozen.c"
+}
 #undef restrict
 
 namespace hn = hwy::HWY_NAMESPACE;
