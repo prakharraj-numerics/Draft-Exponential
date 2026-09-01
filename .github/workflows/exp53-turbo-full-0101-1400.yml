@@ -47,10 +47,15 @@ jobs:
         run: |
           set -euo pipefail
           MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
-          COMMON='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17'
+          CFLAGS='-O3 -xGRANITERAPIDS -fp-model=precise -fno-math-errno -DNDEBUG -std=c11'
+          CXXFLAGS='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17'
           LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
-          "$ICPX" $COMMON -I"$MKLROOT/include" -I/tmp/turbo exp53_turbo_full_0101_1400_candidate.cpp exp53_n2_vmstyle_u4_0381_frozen.c bench_exp53_turbo_full_0101_1400.cpp $LINK -o /tmp/bench_turbo_full
+          "$ICX" $CFLAGS -c exp53_n2_vmstyle_u4_0381_frozen.c -o /tmp/frozen_ref.o
+          "$ICPX" $CXXFLAGS -I"$MKLROOT/include" -I/tmp/turbo -c exp53_turbo_full_0101_1400_candidate.cpp -o /tmp/turbo_full.o
+          "$ICPX" $CXXFLAGS -I"$MKLROOT/include" -I/tmp/turbo -c bench_exp53_turbo_full_0101_1400.cpp -o /tmp/bench_turbo_full.o
+          "$ICPX" /tmp/turbo_full.o /tmp/frozen_ref.o /tmp/bench_turbo_full.o $LINK -o /tmp/bench_turbo_full
       - name: Benchmark
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
