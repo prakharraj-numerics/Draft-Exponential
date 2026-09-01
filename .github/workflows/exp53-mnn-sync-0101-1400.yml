@@ -1,0 +1,77 @@
+name: EXP53 MNN Sync 101-1400 Xeon
+
+on:
+  push:
+    paths:
+      - 'exp53_mnn_sync_0101_1400_candidate.cpp'
+      - 'bench_exp53_mnn_sync_0101_1400.cpp'
+      - '.github/workflows/exp53-mnn-sync-0101-1400.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    env:
+      MKL_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; fi
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+      - name: Fetch pinned Alibaba MNN
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/alibaba/MNN.git /tmp/MNN
+          git -C /tmp/MNN checkout d56423dfd7524821e66c3304d8d70f0edc3cea7d
+          test "$(git -C /tmp/MNN rev-parse HEAD)" = "d56423dfd7524821e66c3304d8d70f0edc3cea7d"
+      - name: Build
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          CFLAGS='-O3 -xGRANITERAPIDS -fp-model=precise -fno-math-errno -DNDEBUG -std=c11'
+          CXXFLAGS='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17 -DMNN_USE_THREAD_POOL'
+          INC="-I$MKLROOT/include -I/tmp/MNN/include -I/tmp/MNN/source"
+          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
+          "$ICX" $CFLAGS -c exp53_n2_vmstyle_u4_0381_frozen.c -o /tmp/frozen_ref.o
+          "$ICPX" $CXXFLAGS $INC -c /tmp/MNN/source/backend/cpu/ThreadPool.cpp -o /tmp/mnn_threadpool.o
+          "$ICPX" $CXXFLAGS $INC -c exp53_mnn_sync_0101_1400_candidate.cpp -o /tmp/mnn_exp.o
+          "$ICPX" $CXXFLAGS $INC -c bench_exp53_mnn_sync_0101_1400.cpp -o /tmp/bench_mnn.o
+          "$ICPX" /tmp/mnn_exp.o /tmp/mnn_threadpool.o /tmp/frozen_ref.o /tmp/bench_mnn.o $LINK -o /tmp/bench_mnn
+      - name: Benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo "MNN_HEAD=$(git -C /tmp/MNN rev-parse HEAD)"; } > /tmp/result.txt
+          taskset -c 0,2 /tmp/bench_mnn | tee -a /tmp/result.txt
+          grep -q '^FINAL domain=unit n=101 ' /tmp/result.txt
+          grep -q '^FINAL domain=unit n=1400 ' /tmp/result.txt
+          grep -q '^FINAL domain=mid n=1400 ' /tmp/result.txt
+          ! grep -Eq 'gt1=[1-9][0-9]*' /tmp/result.txt
+      - name: Upload
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-mnn-sync-101-1400-${{ matrix.shard }}
+          path: /tmp/result.txt
