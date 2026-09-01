@@ -26,10 +26,9 @@
      - temporal stores
      - 32-element aligned partition
      - Highway 1.4.0 static AVX-512 backend
-     - helper share frozen by size from the successful sweeps:
+     - helper share frozen by size:
          1600..1999 -> 35%
-         2000..2249 -> 40%
-         2250..2849 -> 40%
+         2000..2849 -> 40%
          2850..3000 -> 42%
 
    IMPORTANT:
@@ -40,6 +39,7 @@
 
 #define HWY_COMPILE_ONLY_STATIC
 #include "hwy/highway.h"
+#include "exp53_highway_sync_1600_3000_constants_frozen.hpp"
 #include <atomic>
 #include <thread>
 #include <cstddef>
@@ -49,23 +49,18 @@
 #include <sched.h>
 #include <immintrin.h>
 
-#define restrict __restrict__
-extern "C" {
-#include "exp53_n2_vmstyle_u4_0381_frozen.c"
-}
-#undef restrict
-
 namespace exp53_hwy_frozen_ns {
 namespace hn = hwy::HWY_NAMESPACE;
+namespace c = exp53_hwy_const_frozen;
 
 static HWY_INLINE void vec8(double* out, const double* in) {
     const hn::FixedTag<double, 8> d;
     const hn::RebindToSigned<decltype(d)> di;
-    const auto inv=hn::Set(d,N2F_INV128), hi=hn::Set(d,N2F_L128_HI), mi=hn::Set(d,N2F_L128_MI),
-               lo=hn::Set(d,N2F_L128_LO), magic=hn::Set(d,N2F_MAGIC), one=hn::Set(d,1.0),
-               q1=hn::Set(d,N2F_Q1), q2=hn::Set(d,N2F_Q2), q3=hn::Set(d,N2F_Q3), q4=hn::Set(d,N2F_Q4);
-    const auto mb=hn::Set(di,(int64_t)N2F_MAGIC_BITS), mask=hn::Set(di,127);
-    const auto* tab=reinterpret_cast<const int64_t*>(N2_FROZEN_TAB128);
+    const auto inv=hn::Set(d,c::INV128), hi=hn::Set(d,c::L128_HI), mi=hn::Set(d,c::L128_MI),
+               lo=hn::Set(d,c::L128_LO), magic=hn::Set(d,c::MAGIC), one=hn::Set(d,1.0),
+               q1=hn::Set(d,c::Q1), q2=hn::Set(d,c::Q2), q3=hn::Set(d,c::Q3), q4=hn::Set(d,c::Q4);
+    const auto mb=hn::Set(di,(int64_t)c::MAGIC_BITS), mask=hn::Set(di,127);
+    const auto* tab=reinterpret_cast<const int64_t*>(c::TAB128);
 
     auto x=hn::LoadU(d,in);
     auto biased=hn::MulAdd(x,inv,magic);
