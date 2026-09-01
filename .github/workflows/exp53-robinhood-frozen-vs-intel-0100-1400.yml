@@ -7,6 +7,7 @@ on:
       - 'bench_exp53_frozen_robinhood_0100_1400.cpp'
       - '.github/workflows/exp53-robinhood-frozen-vs-intel-0100-1400.yml'
 
+# fresh runner allocation 2026-09-01b
 jobs:
   bench:
     strategy:
