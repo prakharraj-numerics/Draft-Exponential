@@ -1,0 +1,117 @@
+name: EXP53 process-map pipeline synthesis 100-1400
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'exp53_processmap_pipeline_synthesis.c'
+      - 'bench_exp53_processmap_pipeline_synthesis.cpp'
+      - '.github/workflows/exp53-processmap-pipeline-synthesis.yml'
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_6973PC; fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Build candidates and audit assembly
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CROOT=/opt/intel/oneapi/compiler/latest; MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=$CROOT/bin/icx; ICPX=$CROOT/bin/icpx
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
+          "$ICX" $COMMON -c exp53_processmap_pipeline_synthesis.c -o /tmp/synth.o
+          objdump -d -Mintel /tmp/synth.o > /tmp/synth.asm
+          "$ICPX" -std=c++17 $COMMON -I"$MKLROOT/include" bench_exp53_processmap_pipeline_synthesis.cpp /tmp/synth.o \
+            -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench
+          python3 - <<'PY' > /tmp/asm_audit.txt
+          import re
+          txt=open('/tmp/synth.asm').read().splitlines()
+          names=['exp53_pm_u3','exp53_pm_u4','exp53_pm_u5','exp53_pm_u6','exp53_pm_u4_stagger','exp53_n2_vmstyle_u4_0381_frozen']
+          blocks={n:[] for n in names}; cur=None
+          for line in txt:
+              m=re.search(r'<([^>]+)>:',line)
+              if m: cur=m.group(1) if m.group(1) in blocks else None
+              elif cur: blocks[cur].append(line)
+          for n in names:
+              b='\n'.join(blocks[n]).lower()
+              print('ASM',n,'lines',len(blocks[n]),'gather',b.count('vgather'),'vfmadd',b.count('vfmadd'),'vfnmadd',b.count('vfnmadd'),'vmulpd',b.count('vmulpd'),'stack_refs',b.count('[rsp')+b.count('[rbp'))
+          PY
+          { echo "CPU=$MODEL"; echo "HEAD=$(git rev-parse HEAD)"; "$ICPX" --version | head -1; cat /tmp/asm_audit.txt; } > /tmp/meta.txt
+
+      - name: Benchmark synthesis candidates
+        if: steps.cpu.outputs.eligible == '1'
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW=/tmp/raw.txt; OUT=/tmp/results.txt; : > "$RAW"; cat /tmp/meta.txt | tee "$OUT"
+          for rep in 1 2 3 4 5; do
+            case "$rep" in
+              1) order='u3 u4 u5 u6 stagger frozen intel'; rev='' ;;
+              2) order='intel frozen stagger u6 u5 u4 u3'; rev=1 ;;
+              3) order='u5 u3 intel u4 frozen u6 stagger'; rev='' ;;
+              4) order='stagger u6 frozen u3 u5 intel u4'; rev=1 ;;
+              5) order='u4 intel u6 frozen stagger u3 u5'; rev='' ;;
+            esac
+            for s in $order; do SWEEP_REVERSE=$rev /tmp/bench "$s" | tee -a "$RAW"; done
+          done
+          python3 - <<'PY' | tee -a "$OUT"
+          import re,statistics
+          from collections import defaultdict
+          stacks=('u3','u4','u5','u6','stagger','frozen','intel')
+          cand=stacks[:-2]
+          d=defaultdict(list); checks=[]
+          rp=re.compile(r'RESULT stack=(\w+) domain=(unit|mid) n=(\d+) calls=(\d+) ns=([0-9.]+)')
+          rc=re.compile(r'CHECK stack=(\w+) domain=(unit|mid) n=(\d+) bitdiff=(\d+)')
+          for line in open('/tmp/raw.txt'):
+              m=rp.search(line)
+              if m:d[(m.group(1),m.group(2),int(m.group(3)))].append(float(m.group(5)))
+              z=rc.search(line)
+              if z:checks.append((z.group(1),z.group(2),int(z.group(3)),int(z.group(4))))
+          if not checks or max(x[3] for x in checks)!=0: raise SystemExit('bitdiff failure')
+          wins={s:0 for s in stacks}; ratios={s:[] for s in cand}
+          for dom in ('unit','mid'):
+              print('CATEGORY domain='+dom)
+              for n in range(100,1401,50):
+                  vals={s:statistics.median(d[(s,dom,n)]) for s in stacks}
+                  if any(len(d[(s,dom,n)])!=5 for s in stacks): raise SystemExit('missing samples')
+                  best=min(vals,key=vals.get); wins[best]+=1
+                  for s in cand: ratios[s].append(vals['frozen']/vals[s])
+                  print('FINAL domain=%s n=%d '%(dom,n)+' '.join('%s_ns=%.9f'%(s,vals[s]) for s in stacks)+' best='+best)
+          print('WINS '+' '.join('%s=%d'%(s,wins[s]) for s in stacks))
+          for s in cand: print('SUMMARY stack=%s median_frozen_over=%.6f'% (s,statistics.median(ratios[s])))
+          print('CORRECT bitdiff_max=0')
+          PY
+
+      - name: Upload synthesis evidence
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-processmap-synthesis-${{ matrix.shard }}
+          path: |
+            /tmp/results.txt
+            /tmp/raw.txt
+            /tmp/synth.asm
+            /tmp/asm_audit.txt
