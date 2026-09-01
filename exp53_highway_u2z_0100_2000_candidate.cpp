@@ -26,5 +26,5 @@ void exp53_highway_u2z_0100_2000_candidate(double* out,const double* in,size_t n
     for(int L=0;L<2;++L){sb[L]=hn::Add(tb[L],hn::ShiftLeft<52>(q[L]));scale[L]=hn::BitCast(d,sb[L]);}
     for(int L=0;L<2;++L){ph[L]=hn::Mul(er[L],scale[L]);y[L]=hn::MulAdd(el[L],scale[L],ph[L]);hn::StoreU(y[L],d,out+i+8*L);}
   }
-  if(i<n) exp53_n2_fused_u4_038_frozen(out+i,in+i,n-i);
+  if(i<n) exp53_n2_vmstyle_u4_0381_frozen(out+i,in+i,n-i);
 }
