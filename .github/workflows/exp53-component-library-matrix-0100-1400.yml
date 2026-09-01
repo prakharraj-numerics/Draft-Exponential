@@ -1,4 +1,5 @@
 name: EXP53 Component Library Matrix 100-1400 Xeon
+# fresh allocation pass 2026-09-01-2
 
 on:
   workflow_dispatch:
