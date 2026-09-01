@@ -70,9 +70,9 @@ jobs:
           test "$(git -C /tmp/highway rev-parse HEAD)" = 2607d3b5b0113992fe84d3848859eae13b3b52c1
           test "$(git -C /tmp/fastflow rev-parse HEAD)" = d476f66ab924d8d122f54b4b90aee00ef979aea8
           test "$(git -C /tmp/xnnpack rev-parse HEAD)" = b9b1cec0d2c62f1c3c0e1a590f4a42ddab309719
-          find /tmp/xnn-build -type f -name 'libXNNPACK.a' -print -quit | grep -q .
-          find /tmp/xnn-build -type f -name 'libpthreadpool.a' -print -quit | grep -q .
-          find /tmp/xnn-build -type f -name 'libcpuinfo.a' -print -quit | grep -q .
+          find -L /tmp/xnn-build -type f -name 'libXNNPACK.a' -print -quit | grep -q .
+          find -L /tmp/xnn-build -type f -name 'libpthreadpool.a' -print -quit | grep -q .
+          find -L /tmp/xnn-build -type f -name 'libcpuinfo.a' -print -quit | grep -q .
 
       - name: Generate matrix benchmark sources
         if: steps.cpu.outputs.eligible == '1'
@@ -178,12 +178,12 @@ jobs:
           "$ICPX" $CXXFLAGS -I. -I/tmp/component-matrix -I/tmp/fastflow /tmp/component-matrix/run_fastflow.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/run_fastflow
           "$ICPX" $CXXFLAGS -I. -I/tmp/component-matrix -I/tmp/highway /tmp/component-matrix/run_highway_sync.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/run_highway_sync
 
-          PTHREAD_A="$(find /tmp/xnn-build -type f -name 'libpthreadpool.a' -print -quit)"
-          XNN_A="$(find /tmp/xnn-build -type f -name 'libXNNPACK.a' -print -quit)"
-          CPUINFO_A="$(find /tmp/xnn-build -type f -name 'libcpuinfo.a' -print -quit)"
-          CLOG_A="$(find /tmp/xnn-build -type f -name 'libclog.a' -print -quit)"
-          PTHREAD_INC="$(find /tmp/xnn-build -type f -name pthreadpool.h -printf '%h\n' -quit)"
-          if [[ -z "$PTHREAD_INC" ]]; then PTHREAD_INC="$(find /tmp/xnnpack -type f -name pthreadpool.h -printf '%h\n' -quit)"; fi
+          PTHREAD_A="$(find -L /tmp/xnn-build -type f -name 'libpthreadpool.a' -print -quit)"
+          XNN_A="$(find -L /tmp/xnn-build -type f -name 'libXNNPACK.a' -print -quit)"
+          CPUINFO_A="$(find -L /tmp/xnn-build -type f -name 'libcpuinfo.a' -print -quit)"
+          CLOG_A="$(find -L /tmp/xnn-build -type f -name 'libclog.a' -print -quit)"
+          PTHREAD_INC="$(find -L /tmp/xnn-build -type f -name pthreadpool.h -printf '%h\n' -quit)"
+          if [[ -z "$PTHREAD_INC" ]]; then PTHREAD_INC="$(find -L /tmp/xnnpack -type f -name pthreadpool.h -printf '%h\n' -quit)"; fi
           test -n "$PTHREAD_A"; test -n "$XNN_A"; test -n "$CPUINFO_A"; test -n "$CLOG_A"; test -n "$PTHREAD_INC"
           "$ICPX" $CXXFLAGS -I/tmp/component-matrix -I/tmp/xnnpack/include -I"$PTHREAD_INC" \
             exp53_xnnpack_internal_0101_1400_candidate.cpp /tmp/component-matrix/run_xnn.cpp /tmp/component-matrix/frozen.o \
