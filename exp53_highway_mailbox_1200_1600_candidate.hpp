@@ -6,7 +6,8 @@
    Fixes applied from the 1200..1600 audit:
    - custom2-style generation store/release (no fetch_add on hot path)
    - one permanent helper pinned CPU2, caller pinned CPU0
-   - exact 32-element split; helper gets only full 32-value blocks
+   - exact 32-element partition boundary
+   - helper owns only full 32-value blocks
    - caller owns the sole remainder/tail
    - precomputed size-bucket split schedule: no percentage multiply/divide in hot path
    - deliberately slightly-underloaded helper so caller completion tends to hide helper finish
@@ -41,17 +42,13 @@ public:
     Exp53HighwayMailbox1200_1600Candidate(const Exp53HighwayMailbox1200_1600Candidate&) = delete;
     Exp53HighwayMailbox1200_1600Candidate& operator=(const Exp53HighwayMailbox1200_1600Candidate&) = delete;
 
-    // Caller split, always a multiple of 32. Helper owns [split,n) but only
-    // full 32-blocks; any final remainder is kept on caller side by choosing
-    // helper_n=floor(target/32)*32 and split=n-helper_n.
     static inline size_t helper_blocks_for(size_t n) {
-        // Tuned starting schedule from earlier exact-Xeon best-share data.
-        // 1200..1311 ~28-30%, 1312..1439 ~30%, 1440..1535 ~31-32%,
-        // 1536..1600 ~33%. Rounded down to full blocks to underload helper.
-        if (n < 1312) return 11; // 352 values
-        if (n < 1440) return 13; // 416
-        if (n < 1536) return 14; // 448
-        return 16;               // 512
+        // Starting schedule derived from earlier exact-Xeon best-share data,
+        // rounded down to full 32-value blocks so the helper tends to finish first.
+        if (n < 1312) return 11; // 352 values, ~27-29%
+        if (n < 1440) return 13; // 416 values, ~29-32%
+        if (n < 1536) return 14; // 448 values, ~29-31%
+        return 16;               // 512 values, ~32-33%
     }
 
     void run(double* out, const double* in, size_t n) {
@@ -60,31 +57,22 @@ public:
             return;
         }
 
-        size_t helper_n = helper_blocks_for(n) * 32;
+        const size_t helper_n = helper_blocks_for(n) * 32;
         if (helper_n >= n || helper_n < 32) {
             exp53_hwy_frozen_ns::kernel(out, in, n);
             return;
         }
 
-        // Critical: make helper region a pure full-block region. Caller gets
-        // prefix plus the only remainder, eliminating duplicate tail/setup.
-        const size_t rem = n & 31u;
-        size_t split = n - helper_n;
-        if ((split & 31u) != rem) split += ((rem + 32u - (split & 31u)) & 31u);
-        if (split >= n || n - split < 32 || ((n - split) & 31u)) {
-            helper_n = ((n * 30u) / 100u) & ~size_t(31);
-            split = n - helper_n;
-        }
-
-        out2_ = out + split;
-        in2_ = in + split;
-        n2_ = n - split;
+        // Helper owns the aligned prefix [0,helper_n). Caller starts exactly
+        // on a 32-value boundary and owns the suffix, including the only tail.
+        out2_ = out;
+        in2_ = in;
+        n2_ = helper_n;
 
         const uint64_t g = ++local_generation_;
         generation_.store(g, std::memory_order_release);
 
-        // Caller owns all irregular work; helper sees only full 32-blocks.
-        exp53_hwy_frozen_ns::kernel(out, in, split);
+        exp53_hwy_frozen_ns::kernel(out + helper_n, in + helper_n, n - helper_n);
         while (completed_.load(std::memory_order_acquire) != g) _mm_pause();
     }
 
