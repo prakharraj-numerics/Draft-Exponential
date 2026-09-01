@@ -182,13 +182,12 @@ jobs:
           PTHREAD_A="$(find -L /tmp/xnn-build -type f -name 'libpthreadpool.a' -print -quit)"
           XNN_A="$(find -L /tmp/xnn-build -type f -name 'libXNNPACK.a' -print -quit)"
           CPUINFO_A="$(find -L /tmp/xnn-build -type f -name 'libcpuinfo.a' -print -quit)"
-          CLOG_A="$(find -L /tmp/xnn-build -type f -name 'libclog.a' -print -quit)"
           PTHREAD_INC="$(find -L /tmp/xnn-build -type f -name pthreadpool.h -printf '%h\n' -quit)"
           if [[ -z "$PTHREAD_INC" ]]; then PTHREAD_INC="$(find -L /tmp/xnnpack -type f -name pthreadpool.h -printf '%h\n' -quit)"; fi
-          test -n "$PTHREAD_A"; test -n "$XNN_A"; test -n "$CPUINFO_A"; test -n "$CLOG_A"; test -n "$PTHREAD_INC"
+          test -n "$PTHREAD_A"; test -n "$XNN_A"; test -n "$CPUINFO_A"; test -n "$PTHREAD_INC"
           "$ICPX" $CXXFLAGS -I/tmp/component-matrix -I/tmp/xnnpack/include -I"$PTHREAD_INC" \
             exp53_xnnpack_internal_0101_1400_candidate.cpp /tmp/component-matrix/run_xnn.cpp /tmp/component-matrix/frozen.o \
-            -Wl,--start-group "$XNN_A" "$PTHREAD_A" "$CPUINFO_A" "$CLOG_A" -Wl,--end-group \
+            -Wl,--start-group "$XNN_A" "$PTHREAD_A" "$CPUINFO_A" -Wl,--end-group \
             -lpthread -lm -ldl -o /tmp/component-matrix/run_xnn
 
           "$ICPX" $CXXFLAGS -I/tmp/component-matrix /tmp/component-matrix/tail.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/tail
