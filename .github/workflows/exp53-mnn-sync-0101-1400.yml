@@ -5,6 +5,7 @@ on:
     paths:
       - 'exp53_mnn_sync_0101_1400_candidate.cpp'
       - 'bench_exp53_mnn_sync_0101_1400.cpp'
+      - 'mnn_threadpool_helper_fast.patch'
       - '.github/workflows/exp53-mnn-sync-0101-1400.yml'
   workflow_dispatch:
 
@@ -41,6 +42,7 @@ jobs:
           git clone --filter=blob:none https://github.com/alibaba/MNN.git /tmp/MNN
           git -C /tmp/MNN checkout d56423dfd7524821e66c3304d8d70f0edc3cea7d
           test "$(git -C /tmp/MNN rev-parse HEAD)" = "d56423dfd7524821e66c3304d8d70f0edc3cea7d"
+          git -C /tmp/MNN apply "$GITHUB_WORKSPACE/mnn_threadpool_helper_fast.patch"
       - name: Build
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
