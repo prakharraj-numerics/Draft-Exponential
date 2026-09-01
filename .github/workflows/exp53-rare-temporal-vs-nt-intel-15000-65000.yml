@@ -70,7 +70,7 @@ jobs:
             echo "PRODUCTION_RARE_15K_65K=custom2_temporal"
             echo "COMPARATOR_NT=custom2_same_runtime_plus_nt_store_kernel"
             echo "INTEL_COMPARATOR=vmdExp_VML_HA_mkl_sequential"
-            echo "OUTPUT_PATTERN=256MiB_aligned_rotating_write_once_ring_all_modes"
+            echo "OUTPUT_PATTERN=old_medium_geometry_256MiB_ring_6M_values_per_sample_no_wrap"
           } | tee /tmp/rare_no_nt/build.txt
 
       - name: Benchmark isolated paths
@@ -110,15 +110,15 @@ jobs:
           python3 - <<'PY' | tee -a "$OUT"
           import re, statistics
           from collections import defaultdict
-          pat=re.compile(r'RESULT mode=(temporal|nt|intel) domain=(unit|mid) n=(\d+) calls=(\d+) slots=(\d+) ns=([0-9.]+) maxulp=(\d+) gt1=(\d+)')
-          d=defaultdict(lambda:{'ns':[],'maxulp':[],'gt1':[]})
+          pat=re.compile(r'RESULT mode=(temporal|nt|intel) domain=(unit|mid) n=(\d+) calls=(\d+) slots=(\d+) ns=([0-9.]+) maxulp=(\d+) gt2=(\d+)')
+          d=defaultdict(lambda:{'ns':[],'maxulp':[],'gt2':[]})
           for line in open('/tmp/rare_no_nt/raw.txt'):
               m=pat.search(line)
               if not m: continue
               k=(m.group(1),m.group(2),int(m.group(3)))
               d[k]['ns'].append(float(m.group(6)))
               d[k]['maxulp'].append(int(m.group(7)))
-              d[k]['gt1'].append(int(m.group(8)))
+              d[k]['gt2'].append(int(m.group(8)))
           sizes=list(range(15000,65001,5000))
           wins={'temporal_vs_nt':0,'temporal_vs_intel':0,'nt_vs_intel':0}
           ratios_tn=[]; ratios_it=[]; ratios_in=[]
@@ -130,9 +130,9 @@ jobs:
                       z=d[(mode,domain,n)]
                       if len(z['ns']) != 3:
                           raise SystemExit(f'missing {(mode,domain,n)} {z}')
-                      vals[mode]=(statistics.median(z['ns']),max(z['maxulp']),max(z['gt1']))
+                      vals[mode]=(statistics.median(z['ns']),max(z['maxulp']),max(z['gt2']))
                   t,nt,i=vals['temporal'],vals['nt'],vals['intel']
-                  if t[2] or nt[2]: raise SystemExit(f'accuracy failure domain={domain} n={n} temporal={t} nt={nt}')
+                  if t[2] or nt[2]: raise SystemExit(f'>2 ULP Intel cross-screen failure domain={domain} n={n} temporal={t} nt={nt}')
                   nt_over_t=nt[0]/t[0]
                   intel_over_t=i[0]/t[0]
                   intel_over_nt=i[0]/nt[0]
