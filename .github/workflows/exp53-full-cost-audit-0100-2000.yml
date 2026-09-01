@@ -56,19 +56,23 @@ jobs:
           grep -E 'exp53_n2_vmstyle_u4_0381_frozen|exp53_n2_fused_u4_038_frozen' /tmp/frozen_nm.txt | tee -a /tmp/result.txt || true
           echo '--- OURS OBJDUMP COUNTS ---' | tee -a /tmp/result.txt
           awk '/<exp53_n2_vmstyle_u4_0381_frozen>:/,/^$/' /tmp/frozen_objdump.txt > /tmp/ours.asm
-          for p in vgather vfmadd vfnmadd vmulpd vaddpd vsubpd vpadd vpsll vpsra vmov; do printf '%s ' "$p" | tee -a /tmp/result.txt; grep -Ec "\\b${p}" /tmp/ours.asm | tee -a /tmp/result.txt; done
+          for p in vgather vfmadd vfnmadd vmulpd vaddpd vsubpd vpadd vpsll vpsra vmov; do
+            printf '%s ' "$p" | tee -a /tmp/result.txt
+            COUNT=$(grep -Ec "\\b${p}" /tmp/ours.asm || true)
+            echo "$COUNT" | tee -a /tmp/result.txt
+          done
           echo '--- PERF ---' | tee -a /tmp/result.txt
           EVENTS='cycles,instructions,branches,branch-misses,cache-references,cache-misses,stalled-cycles-frontend,stalled-cycles-backend'
           for n in 256 512 1024 2048; do
             for mode in ours intel; do
               echo "PERF_BEGIN mode=$mode n=$n" | tee -a /tmp/result.txt
+              : > /tmp/perf.tmp
               if taskset -c 0 perf stat -x, -e "$EVENTS" /tmp/bench_fullcost "$mode" "$n" 0 2>>/tmp/perf.tmp; then
                 cat /tmp/perf.tmp | tee -a /tmp/result.txt
               else
                 echo "PERF_UNAVAILABLE mode=$mode n=$n" | tee -a /tmp/result.txt
                 cat /tmp/perf.tmp | tail -20 | tee -a /tmp/result.txt
               fi
-              : > /tmp/perf.tmp
             done
           done
           grep -q '^FINAL domain=unit n=2048 ' /tmp/result.txt
