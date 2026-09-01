@@ -94,7 +94,7 @@ jobs:
           "$ICPX" -std=c++17 -O2 -fprofile-generate=/tmp/icx/pgo.profraw \
             train_exp53_icx_pgo_0100_1400.cpp /tmp/icx/pgo_train.o -lm -o /tmp/icx/pgo_train
           taskset -c 0 /tmp/icx/pgo_train
-          PROFDATA="$(find "$CROOT" -type f -name llvm-profdata -perm -111 | head -1)"
+          PROFDATA="$(find "$CROOT" -type f -name llvm-profdata -perm -111 -print -quit)"
           test -n "$PROFDATA"
           mapfile -t PROFS < <(find /tmp/icx -type f -name '*.profraw' -print)
           test "${#PROFS[@]}" -gt 0
