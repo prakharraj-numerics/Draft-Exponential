@@ -1,10 +1,10 @@
-name: EXP53 Component Library Matrix 100-2000 Xeon
+name: EXP53 Component Library Matrix 100-1400 Xeon
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - '.github/workflows/exp53-component-library-matrix-0100-2000.yml'
+      - '.github/workflows/exp53-component-library-matrix-0100-1400.yml'
       - 'exp53_turbo_0101_2000_candidate.cpp'
       - 'exp53_highway_0101_2000_candidate.cpp'
       - 'exp53_highway_sync_1400_3000_frozen.hpp'
@@ -102,48 +102,48 @@ jobs:
           static inline double med(std::vector<double> v){ std::sort(v.begin(),v.end()); return v[v.size()/2]; }
           static inline size_t calls_for(size_t n){ size_t c=260000/n; return std::max<size_t>(64,std::min<size_t>(2600,c)); }
           template<class F> static double bench_ns(F f,size_t denom,size_t calls,int reps=9){ for(int i=0;i<12;i++)f(); std::vector<double> v; v.reserve(reps); for(int r=0;r<reps;r++){ auto a=std::chrono::steady_clock::now(); for(size_t k=0;k<calls;k++) f(); auto b=std::chrono::steady_clock::now(); v.push_back(std::chrono::duration<double,std::nano>(b-a).count()/calls/denom); } return med(v); }
-          static inline const std::vector<size_t>& sizes(){ static const std::vector<size_t> s={100,125,150,160,192,200,224,250,256,300,320,384,400,448,500,512,600,640,750,768,896,900,960,1000,1024,1100,1152,1200,1250,1280,1344,1399,1400,1500,1536,1600,1664,1750,1792,1900,2000}; return s; }
+          static inline const std::vector<size_t>& sizes(){ static const std::vector<size_t> s={100,101,125,150,160,192,200,224,250,256,300,320,384,400,448,500,512,600,640,750,768,896,900,960,1000,1024,1100,1152,1200,1250,1280,1344,1399,1400}; return s; }
           EOF
 
           cat > /tmp/component-matrix/body_turbo.cpp <<'EOF'
           #include "common.hpp"
           extern void exp53_turbo_0101_2000_candidate(double*,const double*,size_t);
           void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); exp53_turbo_0101_2000_candidate(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{exp53_turbo_0101_2000_candidate(out.p,in.p,n);},n,c); std::cout<<"BODY lib=turbo domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          int main(){ Buf in(1400),out(1400),ref(1400); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); exp53_turbo_0101_2000_candidate(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{exp53_turbo_0101_2000_candidate(out.p,in.p,n);},n,c); std::cout<<"BODY lib=turbo domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
           EOF
 
           cat > /tmp/component-matrix/body_highway.cpp <<'EOF'
           #include "common.hpp"
           extern void exp53_highway_0101_2000_candidate(double*,const double*,size_t);
           extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); exp53_highway_0101_2000_candidate(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{exp53_highway_0101_2000_candidate(out.p,in.p,n);},n,c); std::cout<<"BODY lib=highway domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          int main(){ Buf in(1400),out(1400),ref(1400); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); exp53_highway_0101_2000_candidate(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{exp53_highway_0101_2000_candidate(out.p,in.p,n);},n,c); std::cout<<"BODY lib=highway domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
           EOF
 
           cat > /tmp/component-matrix/body_frozen.cpp <<'EOF'
           #include "common.hpp"
           extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(2000),out(2000); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); auto c=calls_for(n); double t=bench_ns([&]{exp53_n2_vmstyle_u4_0381_frozen(out.p,in.p,n);},n,c); std::cout<<"BODY lib=frozen-native domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          int main(){ Buf in(1400),out(1400); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); auto c=calls_for(n); double t=bench_ns([&]{exp53_n2_vmstyle_u4_0381_frozen(out.p,in.p,n);},n,c); std::cout<<"BODY lib=frozen-native domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
           EOF
 
           cat > /tmp/component-matrix/run_custom2.cpp <<'EOF'
           #include "common.hpp"
           #include "exp53_batch_custom_2core_nt_frozen.hpp"
           extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); Exp53CustomPermanent2CoreFrozen ex; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{ex.run(out.p,in.p,n);},n,c); std::cout<<"EXEC lib=custom2 domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          int main(){ Buf in(1400),out(1400),ref(1400); std::cout<<std::fixed<<std::setprecision(9); Exp53CustomPermanent2CoreFrozen ex; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{ex.run(out.p,in.p,n);},n,c); std::cout<<"EXEC lib=custom2 domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
           EOF
 
           cat > /tmp/component-matrix/run_fastflow.cpp <<'EOF'
           #include "common.hpp"
           #include "exp53_fastflow_batch_2core_frozen.hpp"
           extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); Exp53FastFlowFrozenExecutor ex(2,exp53_n2_vmstyle_u4_0381_frozen); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run_static(out.p,in.p,n,2); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{ex.run_static(out.p,in.p,n,2);},n,c); std::cout<<"EXEC lib=fastflow domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
+          int main(){ Buf in(1400),out(1400),ref(1400); std::cout<<std::fixed<<std::setprecision(9); Exp53FastFlowFrozenExecutor ex(2,exp53_n2_vmstyle_u4_0381_frozen); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run_static(out.p,in.p,n,2); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{ex.run_static(out.p,in.p,n,2);},n,c); std::cout<<"EXEC lib=fastflow domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
           EOF
 
           cat > /tmp/component-matrix/run_highway_sync.cpp <<'EOF'
           #include "common.hpp"
           #include "exp53_highway_sync_1400_3000_frozen.hpp"
           extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); Exp53HighwaySync1400_3000Frozen ex; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run(out.p,in.p,n); auto c=calls_for(n); double t=bench_ns([&]{ex.run(out.p,in.p,n);},n,c); std::cout<<"EXEC lib=highway-sync domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff_gate=bulk\n"; } }
+          int main(){ Buf in(1400),out(1400),ref(1400); std::cout<<std::fixed<<std::setprecision(9); Exp53HighwaySync1400_3000Frozen ex; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{ex.run(out.p,in.p,n);},n,c); std::cout<<"EXEC lib=highway-sync domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
           EOF
 
           cat > /tmp/component-matrix/run_xnn.cpp <<'EOF'
@@ -152,7 +152,7 @@ jobs:
           extern "C" void exp53_xnnpack_destroy(void*);
           extern "C" void exp53_xnnpack_run_mode(void*,double*,const double*,size_t,size_t,int);
           extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); void* p=exp53_xnnpack_create(2); if(!p) return 7; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); double best=1e99; size_t bt=0; int bm=0; for(int m=0;m<4;m++) for(size_t tile: {size_t(32),size_t(64),size_t(96),size_t(128),size_t(192),size_t(256),size_t(384),size_t(512)}){ exp53_xnnpack_run_mode(p,out.p,in.p,n,tile,m); if(std::memcmp(out.p,ref.p,n*8)) continue; auto c=calls_for(n); double t=bench_ns([&]{exp53_xnnpack_run_mode(p,out.p,in.p,n,tile,m);},n,c,7); if(t<best){best=t;bt=tile;bm=m;} } if(best>1e90) return 9; std::cout<<"EXEC lib=xnnpack domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<best<<" tile="<<bt<<" mode="<<bm<<" bitdiff=0\n"; } exp53_xnnpack_destroy(p); }
+          int main(){ Buf in(1400),out(1400),ref(1400); std::cout<<std::fixed<<std::setprecision(9); void* p=exp53_xnnpack_create(2); if(!p) return 7; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); double best=1e99; size_t bt=0; int bm=0; for(int m=0;m<4;m++) for(size_t tile: {size_t(32),size_t(64),size_t(96),size_t(128),size_t(192),size_t(256),size_t(384),size_t(512)}){ exp53_xnnpack_run_mode(p,out.p,in.p,n,tile,m); if(std::memcmp(out.p,ref.p,n*8)) continue; auto c=calls_for(n); double t=bench_ns([&]{exp53_xnnpack_run_mode(p,out.p,in.p,n,tile,m);},n,c,7); if(t<best){best=t;bt=tile;bm=m;} } if(best>1e90) return 9; std::cout<<"EXEC lib=xnnpack domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<best<<" tile="<<bt<<" mode="<<bm<<" bitdiff=0\n"; } exp53_xnnpack_destroy(p); }
           EOF
 
           cat > /tmp/component-matrix/tail.cpp <<'EOF'
@@ -241,7 +241,7 @@ jobs:
               kv=dict(x.split('=',1) for x in ln.split()[1:] if '=' in x)
               rows.append((kind,kv['lib'],kv['domain'],int(kv['n']),float(kv['ns'])))
 
-          bands=[(100,255),(256,511),(512,899),(900,1199),(1200,1399),(1400,1599),(1600,2000)]
+          bands=[(100,255),(256,511),(512,899),(900,1199),(1200,1399),(1400,1400)]
           out=[]
           out.append('EXP53 COMPONENT-LIBRARY MATRIX WINNERS')
           out.append('Interpretation: BODY chooses SIMD/math execution backend; EXEC chooses scheduler/sync/partition runtime. Math formula remains frozen.')
@@ -273,7 +273,7 @@ jobs:
 
           out.append('')
           out.append('TAIL process: frozen-native measured for rem=1..31; Turbo/Highway tails are included in their whole BODY timings, XNNPACK delegates residual to frozen, scheduler libraries do not own tail math independently.')
-          out.append('STORE process: temporal is the fair 100-2000 default; NT was previously shown unsuitable at this scale and is not allowed to win by changing output-use semantics.')
+          out.append('STORE process: temporal is the fair 100-1400 default; NT was previously shown unsuitable at this scale and is not allowed to win by changing output-use semantics.')
           out.append('AFFINITY process: custom2/highway-sync explicitly pin CPU0+CPU2; FastFlow/XNNPACK are constrained by taskset to CPU0+CPU2 for this workflow.')
           pathlib.Path('/tmp/component-matrix/summary.txt').write_text('\n'.join(out)+'\n')
           print('\n'.join(out))
@@ -283,7 +283,7 @@ jobs:
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/upload-artifact@v4
         with:
-          name: exp53-component-library-matrix-${{ matrix.shard }}
+          name: exp53-component-library-matrix-100-1400-${{ matrix.shard }}
           path: |
             /tmp/component-matrix/raw.txt
             /tmp/component-matrix/summary.txt
