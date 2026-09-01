@@ -6,6 +6,13 @@
 #include <vector>
 #include "exp53_batch_production.hpp"
 
+/* This smoke intentionally exercises n>=101 plus the existing large routes.
+   Provide a smoke-only small-band symbol so the linker does not require VCL;
+   if routing ever accidentally enters <=100 here, abort loudly. */
+extern "C" void exp53_vcl_u2z_0100_frozen(double*, const double*, size_t) {
+    std::abort();
+}
+
 static void* xalloc(size_t n){ void* p=nullptr; if(posix_memalign(&p,64,n)!=0||!p) std::abort(); return p; }
 static uint64_t bits(double x){ uint64_t u; std::memcpy(&u,&x,8); return u; }
 
