@@ -28,9 +28,8 @@
 
      15000 <= n <= 65000, workers > 1:
        custom permanent 2-core dispatcher with temporal stores (NT removed).
-       This band is intentionally isolated so the rare/write-once benchmark can
-       test whether NT stores were the cause of the previously observed loss to
-       Intel Xeon VML_HA in this size range.
+       Exact Xeon 6973P-C validation run 33543929387: temporal beat NT 22/22
+       and Intel VML_HA 22/22 across UNIT/MID, 15K..65K step 5K.
 
      n > 3000, workers <= 1:
        immutable serial NT-store kernel (unchanged).
