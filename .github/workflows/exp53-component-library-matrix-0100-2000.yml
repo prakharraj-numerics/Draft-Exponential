@@ -108,7 +108,7 @@ jobs:
           cat > /tmp/component-matrix/body_turbo.cpp <<'EOF'
           #include "common.hpp"
           extern void exp53_turbo_0101_2000_candidate(double*,const double*,size_t);
-          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
+          void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
           int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); exp53_turbo_0101_2000_candidate(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_ns([&]{exp53_turbo_0101_2000_candidate(out.p,in.p,n);},n,c); std::cout<<"BODY lib=turbo domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } }
           EOF
 
@@ -143,7 +143,7 @@ jobs:
           #include "common.hpp"
           #include "exp53_highway_sync_1400_3000_frozen.hpp"
           extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); Exp53HighwaySync1400_3000Frozen ex; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run(out.p,in.p,n); /* Highway vector tail is formula-faithful but may differ from scalar frozen tail, so do not require full memcmp here. */ auto c=calls_for(n); double t=bench_ns([&]{ex.run(out.p,in.p,n);},n,c); std::cout<<"EXEC lib=highway-sync domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff_gate=bulk\n"; } }
+          int main(){ Buf in(2000),out(2000),ref(2000); std::cout<<std::fixed<<std::setprecision(9); Exp53HighwaySync1400_3000Frozen ex; for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); ex.run(out.p,in.p,n); auto c=calls_for(n); double t=bench_ns([&]{ex.run(out.p,in.p,n);},n,c); std::cout<<"EXEC lib=highway-sync domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff_gate=bulk\n"; } }
           EOF
 
           cat > /tmp/component-matrix/run_xnn.cpp <<'EOF'
@@ -180,7 +180,6 @@ jobs:
           "$ICPX" $CXXFLAGS -I. -I/tmp/component-matrix -I/tmp/fastflow /tmp/component-matrix/run_fastflow.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/run_fastflow
           "$ICPX" $CXXFLAGS -I. -I/tmp/component-matrix -I/tmp/highway /tmp/component-matrix/run_highway_sync.cpp /tmp/component-matrix/frozen.o -lpthread -lm -o /tmp/component-matrix/run_highway_sync
 
-          # Build XNNPACK bridge against XNNPACK's own pthreadpool target output.
           PTHREAD_A="$(find /tmp/xnn-build -type f -name 'libpthreadpool.a' -print -quit)"
           XNN_A="$(find /tmp/xnn-build -type f -name 'libXNNPACK.a' -print -quit)"
           PTHREAD_INC="$(find /tmp/xnn-build -type f -name pthreadpool.h -printf '%h\n' -quit)"
@@ -212,18 +211,15 @@ jobs:
             echo "RULE=all persistent runtimes executed in separate processes; no simultaneous CPU2 spin workers"
           } | tee -a "$OUT"
 
-          # SIMD/body: single-core CPU0 only.
           taskset -c 0 /tmp/component-matrix/body_frozen | tee -a "$OUT"
           taskset -c 0 /tmp/component-matrix/body_turbo  | tee -a "$OUT"
           taskset -c 0 /tmp/component-matrix/body_highway | tee -a "$OUT"
 
-          # End-to-end execution/sync/partition: each gets exclusive CPU0+CPU2 lifecycle.
           taskset -c 0,2 /tmp/component-matrix/run_xnn | tee -a "$OUT"
           taskset -c 0,2 /tmp/component-matrix/run_fastflow | tee -a "$OUT"
           taskset -c 0,2 /tmp/component-matrix/run_custom2 | tee -a "$OUT"
           taskset -c 0,2 /tmp/component-matrix/run_highway_sync | tee -a "$OUT"
 
-          # Tail baseline process.
           taskset -c 0 /tmp/component-matrix/tail | tee -a "$OUT"
 
           ! grep -q 'bitdiff=1' "$OUT"
@@ -264,7 +260,6 @@ jobs:
                       ranked=sorted(meds.items(), key=lambda z:z[1])
                       out.append(f'{kind} domain={dom} band={lo}-{hi} winner={win} median_ns={meds[win]:.9f} ranking=' + ','.join(f'{a}:{b:.9f}' for a,b in ranked))
 
-          # Pointwise winners expose crossovers hidden by band medians.
           out.append('')
           out.append('POINTWISE WINNERS')
           for kind in ('BODY','EXEC'):
@@ -276,7 +271,6 @@ jobs:
                       t,l=min(cand)
                       out.append(f'POINT kind={kind} domain={dom} n={n} winner={l} ns={t:.9f}')
 
-          # Tail is currently only the frozen-native reference; explicit N/A avoids fake comparisons.
           out.append('')
           out.append('TAIL process: frozen-native measured for rem=1..31; Turbo/Highway tails are included in their whole BODY timings, XNNPACK delegates residual to frozen, scheduler libraries do not own tail math independently.')
           out.append('STORE process: temporal is the fair 100-2000 default; NT was previously shown unsuitable at this scale and is not allowed to win by changing output-use semantics.')
