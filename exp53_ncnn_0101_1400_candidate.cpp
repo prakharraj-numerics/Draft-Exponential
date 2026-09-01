@@ -81,8 +81,10 @@ public:
         const int channels = bottom.c;
         #pragma omp parallel for num_threads(opt.num_threads)
         for (int q = 0; q < channels; q++) {
-            const double* src = reinterpret_cast<const double*>(bottom.channel(q));
-            double* dst = reinterpret_cast<double*>(top.channel(q));
+            const ncnn::Mat src_ch = bottom.channel(q);
+            ncnn::Mat dst_ch = top.channel(q);
+            const double* src = reinterpret_cast<const double*>(src_ch.data);
+            double* dst = reinterpret_cast<double*>(dst_ch.data);
             exp53_range_ncnn(dst, src, (size_t)bottom.w);
         }
         return 0;
@@ -92,44 +94,34 @@ public:
 static Exp53NcnnLayer g_layer;
 
 // Proper ncnn layer call with caller-provided Mat views, no allocation in timed region.
-// channels=1 is the ncnn layer/control path; channels=2 maps two contiguous ranges to two ncnn channels.
+// 1-thread: one ncnn channel containing all n values.
+// 2-thread: two equal contiguous ncnn channels, each aligned to 32 values; any residual is formula-only tail.
 extern "C" void exp53_ncnn_0101_1400(double* out, const double* in, size_t n, int channels, int helper_pct) {
+    (void)helper_pct;
     ncnn::Option opt;
-    opt.num_threads = channels;
 
     if (channels <= 1 || n < 64) {
+        opt.num_threads = 1;
         ncnn::Mat src((int)n, (void*)in, (size_t)8u, 1);
         ncnn::Mat dst((int)n, (void*)out, (size_t)8u, 1);
         g_layer.forward(src, dst, opt);
         return;
     }
 
-    size_t helper = n * (size_t)helper_pct / 100;
-    helper = (helper / 32) * 32;
-    size_t mainn = n - helper;
-    mainn = (mainn / 32) * 32;
-    helper = n - mainn;
-    if (mainn == 0 || helper == 0 || mainn != helper) {
-        // ncnn Mat channels are fixed-width. Use equal two-channel body, then formula-only tail.
-        size_t each = ((n / 2) / 32) * 32;
-        if (each < 32) {
-            ncnn::Mat src((int)n, (void*)in, (size_t)8u, 1);
-            ncnn::Mat dst((int)n, (void*)out, (size_t)8u, 1);
-            g_layer.forward(src, dst, opt);
-            return;
-        }
-        size_t body = each * 2;
-        ncnn::Mat src((int)each, 1, 2, (void*)in, (size_t)8u, 1);
-        ncnn::Mat dst((int)each, 1, 2, (void*)out, (size_t)8u, 1);
+    const size_t each = ((n / 2) / 32) * 32;
+    if (each < 32) {
+        opt.num_threads = 1;
+        ncnn::Mat src((int)n, (void*)in, (size_t)8u, 1);
+        ncnn::Mat dst((int)n, (void*)out, (size_t)8u, 1);
         g_layer.forward(src, dst, opt);
-        if (body < n) exp53_range_ncnn(out + body, in + body, n - body);
         return;
     }
 
-    // Equal-width channel geometry is what ncnn's channel scheduler directly supports.
-    const size_t each = mainn;
-    (void)each;
-    ncnn::Mat src((int)n, (void*)in, (size_t)8u, 1);
-    ncnn::Mat dst((int)n, (void*)out, (size_t)8u, 1);
+    const size_t body = each * 2;
+    opt.num_threads = 2;
+    ncnn::Mat src((int)each, 1, 2, (void*)in, (size_t)8u, 1);
+    ncnn::Mat dst((int)each, 1, 2, (void*)out, (size_t)8u, 1);
     g_layer.forward(src, dst, opt);
+    if (body < n)
+        exp53_range_ncnn(out + body, in + body, n - body);
 }
