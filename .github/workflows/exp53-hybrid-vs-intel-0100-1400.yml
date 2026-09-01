@@ -1,0 +1,122 @@
+name: EXP53 hybrid vs Intel HA 100-1400
+
+on:
+  push:
+    paths:
+      - 'bench_exp53_hybrid_vs_intel_0100_1400.cpp'
+      - 'exp53_hybrid_0101_1400.hpp'
+      - '.github/workflows/exp53-hybrid-vs-intel-0100-1400.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Restore hybrid dependencies
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/exp53-component-deps
+          key: exp53-component-deps-ubuntu24-x86_64-xnn-b9b1cec0-v1
+          fail-on-cache-miss: true
+
+      - name: Build benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/home/runner/exp53-component-deps
+          ln -s "$ROOT/xnnpack" /tmp/xnnpack
+          ln -s "$ROOT/xnn-build" /tmp/xnn-build
+          PTHREAD_A="$(find -L /tmp/xnn-build -type f -name libpthreadpool.a -print -quit)"
+          PTHREAD_INC="$(find -L /tmp/xnn-build -type f -name pthreadpool.h -printf '%h\n' -quit)"
+          if [[ -z "$PTHREAD_INC" ]]; then PTHREAD_INC="$(find -L /tmp/xnnpack -type f -name pthreadpool.h -printf '%h\n' -quit)"; fi
+          test -n "$PTHREAD_A"; test -n "$PTHREAD_INC"
+          CROOT=/opt/intel/oneapi/compiler/latest
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICPX=$CROOT/bin/icpx
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          "$ICPX" -std=c++17 $COMMON -I"$PTHREAD_INC" -I"$MKLROOT/include" bench_exp53_hybrid_vs_intel_0100_1400.cpp "$PTHREAD_A" -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/bench
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" > /tmp/build.txt
+          echo "HEAD=$(git rev-parse HEAD)" >> /tmp/build.txt
+          echo "ICX=$($ICPX --version | head -1)" >> /tmp/build.txt
+
+      - name: Benchmark hybrid vs Intel HA
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          LD_LIBRARY_PATH: /opt/intel/oneapi/compiler/latest/lib:/opt/intel/oneapi/mkl/latest/lib
+          MKL_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          RAW=/tmp/raw.txt; OUT=/tmp/results.txt; : > "$RAW"
+          cat /tmp/build.txt | tee "$OUT"
+          for rep in 1 2 3 4 5; do
+            if (( rep % 2 )); then
+              SWEEP_REVERSE=0 /tmp/bench hybrid | tee -a "$RAW"
+              SWEEP_REVERSE=0 /tmp/bench intel  | tee -a "$RAW"
+            else
+              SWEEP_REVERSE=1 /tmp/bench intel  | tee -a "$RAW"
+              SWEEP_REVERSE=1 /tmp/bench hybrid | tee -a "$RAW"
+            fi
+          done
+          python3 - <<'PY' | tee -a "$OUT"
+          import re,statistics
+          from collections import defaultdict
+          d=defaultdict(list)
+          p=re.compile(r'RESULT stack=(hybrid|intel) domain=(unit|mid) n=(\d+) calls=(\d+) ns=([0-9.]+)')
+          for line in open('/tmp/raw.txt'):
+              m=p.search(line)
+              if m: d[(m.group(1),m.group(2),int(m.group(3)))].append(float(m.group(5)))
+          wins={'hybrid':0,'intel':0,'tie':0}
+          ratios=[]
+          for dom in ('unit','mid'):
+              print('CATEGORY domain='+dom)
+              for n in range(100,1401,50):
+                  h=statistics.median(d[('hybrid',dom,n)])
+                  i=statistics.median(d[('intel',dom,n)])
+                  if len(d[('hybrid',dom,n)])!=5 or len(d[('intel',dom,n)])!=5: raise SystemExit('missing samples')
+                  r=i/h
+                  ratios.append(r)
+                  if h<i: wins['hybrid']+=1; best='hybrid'
+                  elif i<h: wins['intel']+=1; best='intel'
+                  else: wins['tie']+=1; best='tie'
+                  print(f'FINAL domain={dom} n={n} hybrid_ns={h:.9f} intel_ns={i:.9f} intel_over_hybrid={r:.6f} best={best}')
+          print(f"SUMMARY hybrid_wins={wins['hybrid']} intel_wins={wins['intel']} ties={wins['tie']} median_intel_over_hybrid={statistics.median(ratios):.6f}")
+          PY
+
+      - name: Upload benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-hybrid-vs-intel-${{ matrix.shard }}
+          path: |
+            /tmp/results.txt
+            /tmp/raw.txt
