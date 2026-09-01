@@ -1,0 +1,90 @@
+name: EXP53 Highway NT Sync2 100-2000 Xeon
+on:
+  push:
+    paths:
+      - 'exp53_highway_nt_0100_2000_candidate.cpp'
+      - 'exp53_highway_nt_sync2_0100_2000_candidate.hpp'
+      - 'bench_exp53_highway_nt_sync2_0100_2000.cpp'
+      - '.github/workflows/exp53-highway-nt-sync2-0100-2000.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE || true
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512dq; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Fetch Highway 1.4.0
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: git clone --depth 1 --branch 1.4.0 https://github.com/google/highway.git /tmp/highway
+
+      - name: Build Highway NT synchronized benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          COMMON='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17'
+          LINK="-L$MKLROOT/lib -Wl,-rpath,$MKLROOT/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl"
+          "$ICPX" $COMMON -I"$MKLROOT/include" -I/tmp/highway \
+            exp53_highway_nt_0100_2000_candidate.cpp \
+            bench_exp53_highway_nt_sync2_0100_2000.cpp \
+            $LINK -o /tmp/bench_highway_nt_sync2
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "TOPOLOGY=$(lscpu -e=CPU,CORE,SOCKET,NODE,ONLINE | tr '\n' ';')"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "HIGHWAY_TAG=1.4.0"
+            echo "HIGHWAY_HEAD=$(git -C /tmp/highway rev-parse HEAD)"
+            echo "EXECUTOR=permanent-helper release-acquire generation/completion callerCPU0 helperCPU2 NT+sfence"
+          } | tee /tmp/meta.txt
+
+      - name: Benchmark Highway NT 100-2000
+        if: steps.cpu.outputs.eligible == '1'
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat /tmp/meta.txt > /tmp/result.txt
+          taskset -c 0,2 /tmp/bench_highway_nt_sync2 | tee -a /tmp/result.txt
+          ! grep -q '^FAIL ' /tmp/result.txt
+          ! grep -q 'bitdiff=1' /tmp/result.txt
+          grep -q '^FINAL domain=unit n=100 ' /tmp/result.txt
+          grep -q '^FINAL domain=unit n=2000 ' /tmp/result.txt
+          grep -q '^FINAL domain=mid n=2000 ' /tmp/result.txt
+
+      - name: Upload
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-highway-nt-sync2-0100-2000-${{ matrix.shard }}
+          path: /tmp/result.txt
