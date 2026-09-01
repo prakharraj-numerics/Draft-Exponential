@@ -55,8 +55,9 @@ jobs:
           export CC=/opt/intel/oneapi/compiler/latest/bin/icx
           export CXX=/opt/intel/oneapi/compiler/latest/bin/icpx
           MKLROOT=/opt/intel/oneapi/mkl/latest
-          PTHREADPOOL_INC=$(find /tmp/XNNPACK -path '*/pthreadpool*/include' -type d | head -1)
+          PTHREADPOOL_INC=$(find /tmp/XNNPACK -path '*/pthreadpool*/include' -type d -print -quit)
           test -n "$PTHREADPOOL_INC"
+          echo "PTHREADPOOL_INC=$PTHREADPOOL_INC"
           rm -rf /tmp/exp53-xnn-src /tmp/xnn-exp-build /tmp/xnn-subbuild
           mkdir -p /tmp/exp53-xnn-src
           cat > /tmp/exp53-xnn-src/CMakeLists.txt <<EOF
