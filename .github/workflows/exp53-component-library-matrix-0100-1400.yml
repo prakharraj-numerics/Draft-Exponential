@@ -1,16 +1,10 @@
-name: EXP53 Component Mapping 100-1400 Xeon
+name: EXP53 Isolated Process Mapping 100-1400 Xeon
 
 on:
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/exp53-component-library-matrix-0100-1400.yml'
-      - 'exp53_turbo_0101_2000_candidate.cpp'
-      - 'exp53_highway_0101_2000_candidate.cpp'
-      - 'exp53_fastflow_batch_2core_frozen.hpp'
-      - 'exp53_batch_custom_2core_nt_frozen.hpp'
-      - 'exp53_xnnpack_internal_0101_1400_candidate.cpp'
-      - 'exp53_n2_vmstyle_u4_0381_frozen.c'
 
 jobs:
   bench:
@@ -69,220 +63,150 @@ jobs:
           test "$(git -C /tmp/highway rev-parse HEAD)" = 2607d3b5b0113992fe84d3848859eae13b3b52c1
           test "$(git -C /tmp/fastflow rev-parse HEAD)" = d476f66ab924d8d122f54b4b90aee00ef979aea8
           test "$(git -C /tmp/xnnpack rev-parse HEAD)" = b9b1cec0d2c62f1c3c0e1a590f4a42ddab309719
-          find -L /tmp/xnn-build -type f -name 'libXNNPACK.a' -print -quit | grep -q .
           find -L /tmp/xnn-build -type f -name 'libpthreadpool.a' -print -quit | grep -q .
-          find -L /tmp/xnn-build -type f -name 'libcpuinfo.a' -print -quit | grep -q .
 
-      - name: Generate benchmark sources
+      - name: Generate isolated process microbenchmarks
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/component-map
+          mkdir -p /tmp/process-map
 
-          cat > /tmp/component-map/common.hpp <<'EOF'
+          cat > /tmp/process-map/common.hpp <<'EOF'
           #pragma once
           #include <algorithm>
-          #include <atomic>
           #include <chrono>
           #include <cstdint>
           #include <cstdlib>
-          #include <cstring>
           #include <iomanip>
           #include <iostream>
-          #include <thread>
           #include <vector>
+          static inline double median(std::vector<double> v){ std::sort(v.begin(),v.end()); return v[v.size()/2]; }
+          template<class F> static double bench(F f,size_t denom,size_t calls,int reps=11){ for(int i=0;i<20;i++)f(); std::vector<double> v; for(int r=0;r<reps;r++){ auto a=std::chrono::steady_clock::now(); for(size_t k=0;k<calls;k++) f(); auto b=std::chrono::steady_clock::now(); v.push_back(std::chrono::duration<double,std::nano>(b-a).count()/calls/denom); } return median(v); }
+          static inline const std::vector<size_t>& sizes(){ static const std::vector<size_t> s={100,125,160,192,224,256,320,384,448,512,640,768,896,1024,1152,1280,1400}; return s; }
+          EOF
+
+          cat > /tmp/process-map/simd.cpp <<'EOF'
+          #include "common.hpp"
+          #include <immintrin.h>
+          #include "turbo/simd/simd.h"
+          #define HWY_COMPILE_ONLY_STATIC
+          #include "hwy/highway.h"
+          namespace ts=turbo::simd; namespace hn=hwy::HWY_NAMESPACE;
+          alignas(64) static double in[1408], out[1408];
+          alignas(64) static int64_t idx[1408], tab[128];
+          static volatile double sinkd=0.0;
+          static void init(){ for(size_t i=0;i<1408;i++){ in[i]=0.0001+(double)(i%127)/131.0; idx[i]=(int64_t)(i&127); } for(int i=0;i<128;i++) tab[i]=0x3ff0000000000000LL+i; }
+          __attribute__((noinline)) static void native_ls(size_t n){ size_t i=0; for(;i+8<=n;i+=8){auto x=_mm512_loadu_pd(in+i); _mm512_storeu_pd(out+i,x);} sinkd+=out[(n/8)*8?((n/8)*8-1):0]; }
+          __attribute__((noinline)) static void turbo_ls(size_t n){ using D=ts::batch<double>; size_t i=0; for(;i+8<=n;i+=8){D x=D::load_unaligned(in+i); x.store_unaligned(out+i);} sinkd+=out[(n/8)*8?((n/8)*8-1):0]; }
+          __attribute__((noinline)) static void highway_ls(size_t n){ const hn::FixedTag<double,8>d; size_t i=0; for(;i+8<=n;i+=8){auto x=hn::LoadU(d,in+i);hn::StoreU(x,d,out+i);} sinkd+=out[(n/8)*8?((n/8)*8-1):0]; }
+          __attribute__((noinline)) static void native_gather(size_t n){ size_t i=0; __m512i acc=_mm512_setzero_si512(); for(;i+8<=n;i+=8){auto j=_mm512_loadu_si512((void*)(idx+i)); auto g=_mm512_i64gather_epi64(j,tab,8); acc=_mm512_xor_si512(acc,g);} alignas(64) int64_t q[8];_mm512_store_si512(q,acc);sinkd+=(double)(q[0]&255); }
+          __attribute__((noinline)) static void turbo_gather(size_t n){ using I=ts::batch<int64_t>; I acc(0); size_t i=0; for(;i+8<=n;i+=8){I j=I::load_unaligned(idx+i); acc=acc ^ I::gather(tab,j);} alignas(64) int64_t q[8];acc.store_unaligned(q);sinkd+=(double)(q[0]&255); }
+          __attribute__((noinline)) static void highway_gather(size_t n){ const hn::FixedTag<int64_t,8>d; auto acc=hn::Zero(d); size_t i=0; for(;i+8<=n;i+=8){auto j=hn::LoadU(d,idx+i);auto g=hn::GatherIndex(d,tab,j);acc=hn::Xor(acc,g);} alignas(64) int64_t q[8];hn::StoreU(acc,d,q);sinkd+=(double)(q[0]&255); }
+          __attribute__((noinline)) static void native_reduce(size_t n){ auto a=_mm512_set1_pd(.0054152123),b=_mm512_set1_pd(.0000301),c=_mm512_set1_pd(.00000017); size_t i=0; for(;i+8<=n;i+=8){auto x=_mm512_loadu_pd(in+i);auto k=_mm512_set1_pd(3.0); x=_mm512_fnmadd_pd(k,a,x);x=_mm512_fnmadd_pd(k,b,x);x=_mm512_fnmadd_pd(k,c,x);_mm512_storeu_pd(out+i,x);} sinkd+=out[0]; }
+          __attribute__((noinline)) static void turbo_reduce(size_t n){ using D=ts::batch<double>;D a(.0054152123),b(.0000301),c(.00000017),k(3.0);size_t i=0;for(;i+8<=n;i+=8){D x=D::load_unaligned(in+i);x=ts::fnma(k,a,x);x=ts::fnma(k,b,x);x=ts::fnma(k,c,x);x.store_unaligned(out+i);}sinkd+=out[0]; }
+          __attribute__((noinline)) static void highway_reduce(size_t n){ const hn::FixedTag<double,8>d;auto a=hn::Set(d,.0054152123),b=hn::Set(d,.0000301),c=hn::Set(d,.00000017),k=hn::Set(d,3.0);size_t i=0;for(;i+8<=n;i+=8){auto x=hn::LoadU(d,in+i);x=hn::NegMulAdd(k,a,x);x=hn::NegMulAdd(k,b,x);x=hn::NegMulAdd(k,c,x);hn::StoreU(x,d,out+i);}sinkd+=out[0]; }
+          __attribute__((noinline)) static void native_poly(size_t n){auto q1=_mm512_set1_pd(.25),q2=_mm512_set1_pd(.052083333333),q3=_mm512_set1_pd(.0078125),q4=_mm512_set1_pd(.000857204861),one=_mm512_set1_pd(1.0);size_t i=0;for(;i+8<=n;i+=8){auto r=_mm512_loadu_pd(in+i);auto h=_mm512_fmadd_pd(q4,r,q3);h=_mm512_fmadd_pd(h,r,q2);h=_mm512_fmadd_pd(h,r,q1);h=_mm512_fmadd_pd(h,r,one);_mm512_storeu_pd(out+i,h);}sinkd+=out[0];}
+          __attribute__((noinline)) static void turbo_poly(size_t n){using D=ts::batch<double>;D q1(.25),q2(.052083333333),q3(.0078125),q4(.000857204861),one(1.0);size_t i=0;for(;i+8<=n;i+=8){D r=D::load_unaligned(in+i);D h=ts::fma(q4,r,q3);h=ts::fma(h,r,q2);h=ts::fma(h,r,q1);h=ts::fma(h,r,one);h.store_unaligned(out+i);}sinkd+=out[0];}
+          __attribute__((noinline)) static void highway_poly(size_t n){const hn::FixedTag<double,8>d;auto q1=hn::Set(d,.25),q2=hn::Set(d,.052083333333),q3=hn::Set(d,.0078125),q4=hn::Set(d,.000857204861),one=hn::Set(d,1.0);size_t i=0;for(;i+8<=n;i+=8){auto r=hn::LoadU(d,in+i);auto h=hn::MulAdd(q4,r,q3);h=hn::MulAdd(h,r,q2);h=hn::MulAdd(h,r,q1);h=hn::MulAdd(h,r,one);hn::StoreU(h,d,out+i);}sinkd+=out[0];}
+          __attribute__((noinline)) static void native_recon(size_t n){auto one=_mm512_set1_pd(1.0),scale=_mm512_set1_pd(1.0317434075);size_t i=0;for(;i+8<=n;i+=8){auto r=_mm512_loadu_pd(in+i);auto h=_mm512_loadu_pd(in+i);auto s=_mm512_mul_pd(h,h);auto er=_mm512_fmadd_pd(r,s,one);auto el=_mm512_fmadd_pd(r,s,_mm512_sub_pd(one,er));auto ph=_mm512_mul_pd(er,scale);auto y=_mm512_fmadd_pd(el,scale,ph);_mm512_storeu_pd(out+i,y);}sinkd+=out[0];}
+          __attribute__((noinline)) static void turbo_recon(size_t n){using D=ts::batch<double>;D one(1.0),scale(1.0317434075);size_t i=0;for(;i+8<=n;i+=8){D r=D::load_unaligned(in+i),h=r;D s=h*h;D er=ts::fma(r,s,one);D el=ts::fma(r,s,one-er);D ph=er*scale;D y=ts::fma(el,scale,ph);y.store_unaligned(out+i);}sinkd+=out[0];}
+          __attribute__((noinline)) static void highway_recon(size_t n){const hn::FixedTag<double,8>d;auto one=hn::Set(d,1.0),scale=hn::Set(d,1.0317434075);size_t i=0;for(;i+8<=n;i+=8){auto r=hn::LoadU(d,in+i),h=r;auto s=hn::Mul(h,h);auto er=hn::MulAdd(r,s,one);auto el=hn::MulAdd(r,s,hn::Sub(one,er));auto ph=hn::Mul(er,scale);auto y=hn::MulAdd(el,scale,ph);hn::StoreU(y,d,out+i);}sinkd+=out[0];}
+          int main(){init();std::cout<<std::fixed<<std::setprecision(9);struct P{const char*name;void(*n)(size_t);void(*t)(size_t);void(*h)(size_t);} ps[]={{"load_store",native_ls,turbo_ls,highway_ls},{"gather",native_gather,turbo_gather,highway_gather},{"range_reduce_3fma",native_reduce,turbo_reduce,highway_reduce},{"poly_4fma",native_poly,turbo_poly,highway_poly},{"reconstruct",native_recon,turbo_recon,highway_recon}};for(auto&p:ps)for(size_t n:sizes()){size_t body=(n/8)*8,calls=std::max<size_t>(300,300000/body);for(auto x:{std::pair<const char*,void(*)(size_t)>{"native",p.n},{"turbo",p.t},{"highway",p.h}}){double z=bench([&]{x.second(body);},body,calls);std::cout<<"PROCESS name="<<p.name<<" lib="<<x.first<<" n="<<n<<" ns="<<z<<"\n";}} std::cerr<<sinkd<<"\n";}
+          EOF
+
+          cat > /tmp/process-map/xnn_sched.cpp <<'EOF'
+          #include "common.hpp"
+          #include <pthreadpool.h>
+          struct C{alignas(64) volatile size_t slot[64];};
+          static void one(void*p,size_t i){auto*c=(C*)p;c->slot[i&63]++;}
+          static void tile(void*p,size_t s,size_t z){auto*c=(C*)p;c->slot[(s/32)&63]+=z;}
+          int main(){auto pool=pthreadpool_create(2);if(!pool)return 2;C c{};std::cout<<std::fixed<<std::setprecision(9);for(size_t n:sizes()){double d=bench([&]{pthreadpool_parallelize_1d(pool,one,&c,2,0);},1,30000);std::cout<<"PROCESS name=dispatch_sync lib=xnnpack n="<<n<<" ns="<<d<<"\n";size_t body=(n/32)*32;double p=bench([&]{pthreadpool_parallelize_1d_tile_1d(pool,tile,&c,body,body/2>=32?(body/2/32)*32:32,0);},1,20000);std::cout<<"PROCESS name=partition_handoff lib=xnnpack n="<<n<<" ns="<<p<<"\n";}pthreadpool_destroy(pool);}
+          EOF
+
+          cat > /tmp/process-map/ff_sched.cpp <<'EOF'
+          #include "common.hpp"
+          #include <ff/parallel_for.hpp>
+          int main(){ff::ParallelFor pf(2,true,true);alignas(64) volatile size_t slot[64]{};std::cout<<std::fixed<<std::setprecision(9);for(size_t n:sizes()){double d=bench([&]{pf.parallel_for_static(0L,2L,1L,0L,[&](long w){slot[w]++;},2L);},1,30000);std::cout<<"PROCESS name=dispatch_sync lib=fastflow n="<<n<<" ns="<<d<<"\n";size_t blocks=n/32;double p=bench([&]{pf.parallel_for_static(0L,2L,1L,0L,[&](long w){size_t b0=(blocks*(size_t)w)/2,b1=(blocks*(size_t)(w+1))/2;slot[w]+=32*(b1-b0);},2L);},1,20000);std::cout<<"PROCESS name=partition_handoff lib=fastflow n="<<n<<" ns="<<p<<"\n";}}
+          EOF
+
+          cat > /tmp/process-map/custom_sched.cpp <<'EOF'
+          #include "common.hpp"
+          #include <atomic>
+          #include <thread>
+          #include <immintrin.h>
           #include <pthread.h>
           #include <sched.h>
-          #include <immintrin.h>
-          struct Buf { double* p; explicit Buf(size_t n){ if(posix_memalign((void**)&p,64,n*sizeof(double))) std::abort(); } ~Buf(){ free(p); } };
-          static inline uint64_t sm(uint64_t x){ x+=0x9e3779b97f4a7c15ULL; x=(x^(x>>30))*0xbf58476d1ce4e5b9ULL; x=(x^(x>>27))*0x94d049bb133111ebULL; return x^(x>>31); }
-          static inline double uni(uint64_t h){ return ((double)(h>>11)+0.5)/9007199254740992.0; }
-          static inline void fill_input(double* x,size_t n,int d){ uint64_t s=0x243f6a8885a308d3ULL^((uint64_t)n<<19)^((uint64_t)d<<61); for(size_t i=0;i<n;i++){ double q=uni(sm(s+i*0x9e3779b97f4a7c15ULL)); double a=d?1.000001+q*98.999998:0x1p-20+q*(1.0-0x1p-19); x[i]=(i&1)?-a:a; } }
-          static inline double median(std::vector<double> v){ std::sort(v.begin(),v.end()); return v[v.size()/2]; }
-          static inline size_t calls_for(size_t n){ size_t c=260000/n; return std::max<size_t>(96,std::min<size_t>(2600,c)); }
-          template<class F> static double bench_input(F f,size_t n,size_t calls,int reps=9){ for(int i=0;i<12;i++)f(); std::vector<double> v; for(int r=0;r<reps;r++){ auto a=std::chrono::steady_clock::now(); for(size_t k=0;k<calls;k++)f(); auto b=std::chrono::steady_clock::now(); v.push_back(std::chrono::duration<double,std::nano>(b-a).count()/calls/n); } return median(v); }
-          template<class F> static double bench_call(F f,size_t calls=20000,int reps=9){ for(int i=0;i<20;i++)f(); std::vector<double> v; for(int r=0;r<reps;r++){ auto a=std::chrono::steady_clock::now(); for(size_t k=0;k<calls;k++)f(); auto b=std::chrono::steady_clock::now(); v.push_back(std::chrono::duration<double,std::nano>(b-a).count()/calls); } return median(v); }
-          static inline const std::vector<size_t>& sizes(){ static const std::vector<size_t> s={100,101,125,150,160,192,200,224,250,256,300,320,384,400,448,500,512,600,640,750,768,896,900,960,1000,1024,1100,1152,1200,1250,1280,1344,1399,1400}; return s; }
+          class C2{std::thread th;alignas(64)std::atomic<uint64_t>gen{0},done{0};std::atomic<bool>stop{false},ready{false};alignas(64)volatile size_t slot[2]{};size_t payload=0;static void pin(int c){cpu_set_t s;CPU_ZERO(&s);CPU_SET(c,&s);pthread_setaffinity_np(pthread_self(),sizeof(s),&s);}void loop(){pin(2);ready.store(true,std::memory_order_release);uint64_t seen=0;for(;;){uint64_t g;while((g=gen.load(std::memory_order_acquire))==seen)_mm_pause();seen=g;if(stop.load())return;slot[1]+=payload;done.store(g,std::memory_order_release);}}public:C2(){pin(0);th=std::thread([&]{loop();});while(!ready.load(std::memory_order_acquire))_mm_pause();}~C2(){stop.store(true);gen.fetch_add(1,std::memory_order_release);th.join();}void run(size_t p){payload=p;uint64_t g=gen.fetch_add(1,std::memory_order_release)+1;slot[0]+=p;while(done.load(std::memory_order_acquire)!=g)_mm_pause();}};
+          int main(){C2 c;std::cout<<std::fixed<<std::setprecision(9);for(size_t n:sizes()){double d=bench([&]{c.run(1);},1,30000);std::cout<<"PROCESS name=dispatch_sync lib=custom2 n="<<n<<" ns="<<d<<"\n";size_t blocks=n/32,split=(blocks/2)*32;double p=bench([&]{c.run(split?split:32);},1,20000);std::cout<<"PROCESS name=partition_handoff lib=custom2 n="<<n<<" ns="<<p<<"\n";}}
           EOF
 
-          cat > /tmp/component-map/body_frozen.cpp <<'EOF'
-          #include "common.hpp"
-          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(1408),out(1408); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); auto c=calls_for(n); double t=bench_input([&]{exp53_n2_vmstyle_u4_0381_frozen(out.p,in.p,n);},n,c); std::cout<<"BODY lib=frozen-native domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } for(int d=0;d<2;d++) for(size_t r=1;r<32;r++){ fill_input(in.p,r,d); double t=bench_input([&]{exp53_n2_vmstyle_u4_0381_frozen(out.p,in.p,r);},r,20000,7); std::cout<<"TAIL lib=frozen-native domain="<<(d?"mid":"unit")<<" rem="<<r<<" ns="<<t<<" bitdiff=0\n"; } }
-          EOF
-
-          cat > /tmp/component-map/body_turbo.cpp <<'EOF'
-          #include "common.hpp"
-          extern void exp53_turbo_0101_2000_candidate(double*,const double*,size_t);
-          void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(1408),out(1408),ref(1408); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); exp53_turbo_0101_2000_candidate(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_input([&]{exp53_turbo_0101_2000_candidate(out.p,in.p,n);},n,c); std::cout<<"BODY lib=turbo domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } for(int d=0;d<2;d++) for(size_t r=1;r<32;r++){ fill_input(in.p,r,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,r); exp53_turbo_0101_2000_candidate(out.p,in.p,r); if(std::memcmp(out.p,ref.p,r*8)) return 9; double t=bench_input([&]{exp53_turbo_0101_2000_candidate(out.p,in.p,r);},r,20000,7); std::cout<<"TAIL lib=turbo domain="<<(d?"mid":"unit")<<" rem="<<r<<" ns="<<t<<" bitdiff=0\n"; } }
-          EOF
-
-          cat > /tmp/component-map/body_highway.cpp <<'EOF'
-          #include "common.hpp"
-          extern void exp53_highway_0101_2000_candidate(double*,const double*,size_t);
-          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(1408),out(1408),ref(1408); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++) for(size_t n:sizes()){ fill_input(in.p,n,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n); exp53_highway_0101_2000_candidate(out.p,in.p,n); if(std::memcmp(out.p,ref.p,n*8)) return 9; auto c=calls_for(n); double t=bench_input([&]{exp53_highway_0101_2000_candidate(out.p,in.p,n);},n,c); std::cout<<"BODY lib=highway domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n"; } for(int d=0;d<2;d++) for(size_t r=1;r<32;r++){ fill_input(in.p,r,d); exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,r); exp53_highway_0101_2000_candidate(out.p,in.p,r); if(std::memcmp(out.p,ref.p,r*8)) return 9; double t=bench_input([&]{exp53_highway_0101_2000_candidate(out.p,in.p,r);},r,20000,7); std::cout<<"TAIL lib=highway domain="<<(d?"mid":"unit")<<" rem="<<r<<" ns="<<t<<" bitdiff=0\n"; } }
-          EOF
-
-          cat > /tmp/component-map/sched_xnn.cpp <<'EOF'
-          #include "common.hpp"
-          #include <xnnpack.h>
-          #include <pthreadpool.h>
-          struct C { alignas(64) volatile size_t v[2]; };
-          static void task(void* p,size_t i){ auto*c=(C*)p; c->v[i]++; }
-          int main(){ if(xnn_initialize(nullptr)!=xnn_status_success) return 7; auto pool=pthreadpool_create(2); if(!pool)return 7; C c{{0,0}}; std::cout<<std::fixed<<std::setprecision(3); for(size_t n:sizes()){ double t=bench_call([&]{pthreadpool_parallelize_1d(pool,task,&c,2,0);}); std::cout<<"SCHED lib=xnnpack n="<<n<<" ns_call="<<t<<" tasks=2\n"; } pthreadpool_destroy(pool); }
-          EOF
-
-          cat > /tmp/component-map/sched_fastflow.cpp <<'EOF'
-          #include "common.hpp"
-          #include "exp53_fastflow_batch_2core_frozen.hpp"
-          __attribute__((noinline)) static void noop(double* o,const double* i,size_t n){ asm volatile(""::"r"(o),"r"(i),"r"(n):"memory"); }
-          int main(){ Buf in(1408),out(1408); Exp53FastFlowFrozenExecutor ex(2,noop); std::cout<<std::fixed<<std::setprecision(3); for(size_t n:sizes()){ double t=bench_call([&]{ex.run_static(out.p,in.p,n,2);}); std::cout<<"SCHED lib=fastflow n="<<n<<" ns_call="<<t<<" tasks=2\n"; } }
-          EOF
-
-          cat > /tmp/component-map/sched_custom2.cpp <<'EOF'
-          #include "common.hpp"
-          class Sync2 { public: Sync2():g(0),done(0),stop(false){ pin(0); h=std::thread([this]{loop();}); while(!ready.load(std::memory_order_acquire)) _mm_pause(); } ~Sync2(){ stop.store(true,std::memory_order_relaxed); g.fetch_add(1,std::memory_order_release); h.join(); } void run(){ uint64_t x=g.fetch_add(1,std::memory_order_release)+1; asm volatile("":::"memory"); while(done.load(std::memory_order_acquire)!=x)_mm_pause(); } private: static void pin(int c){cpu_set_t s;CPU_ZERO(&s);CPU_SET(c,&s);(void)pthread_setaffinity_np(pthread_self(),sizeof(s),&s);} void loop(){pin(2);ready.store(true,std::memory_order_release);uint64_t seen=g.load();for(;;){uint64_t x;while((x=g.load(std::memory_order_acquire))==seen)_mm_pause();seen=x;if(stop.load(std::memory_order_relaxed))return;asm volatile("":::"memory");done.store(x,std::memory_order_release);}} std::thread h; alignas(64) std::atomic<uint64_t> g,done; std::atomic<bool> ready{false},stop; };
-          int main(){ Sync2 ex; std::cout<<std::fixed<<std::setprecision(3); for(size_t n:sizes()){ double t=bench_call([&]{ex.run();}); std::cout<<"SCHED lib=custom2 n="<<n<<" ns_call="<<t<<" tasks=2\n"; } }
-          EOF
-
-          cat > /tmp/component-map/runtime_fastflow.cpp <<'EOF'
-          #include "common.hpp"
-          #include "exp53_fastflow_batch_2core_frozen.hpp"
-          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(1408),out(1408),ref(1408); Exp53FastFlowFrozenExecutor ex(2,exp53_n2_vmstyle_u4_0381_frozen); std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++)for(size_t n:sizes()){fill_input(in.p,n,d);exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n);ex.run_static(out.p,in.p,n,2);if(std::memcmp(out.p,ref.p,n*8))return 9;double t=bench_input([&]{ex.run_static(out.p,in.p,n,2);},n,calls_for(n),7);std::cout<<"RUNTIME lib=fastflow domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n";}}
-          EOF
-
-          cat > /tmp/component-map/runtime_custom2.cpp <<'EOF'
-          #include "common.hpp"
-          #include "exp53_batch_custom_2core_nt_frozen.hpp"
-          extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(1408),out(1408),ref(1408); Exp53CustomPermanent2CoreFrozen ex; std::cout<<std::fixed<<std::setprecision(9); for(int d=0;d<2;d++)for(size_t n:sizes()){fill_input(in.p,n,d);exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n);ex.run(out.p,in.p,n);if(std::memcmp(out.p,ref.p,n*8))return 9;double t=bench_input([&]{ex.run(out.p,in.p,n);},n,calls_for(n),7);std::cout<<"RUNTIME lib=custom2 domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<t<<" bitdiff=0\n";}}
-          EOF
-
-          cat > /tmp/component-map/runtime_xnn.cpp <<'EOF'
-          #include "common.hpp"
-          extern "C" void* exp53_xnnpack_create(size_t); extern "C" void exp53_xnnpack_destroy(void*); extern "C" void exp53_xnnpack_run_mode(void*,double*,const double*,size_t,size_t,int); extern "C" void exp53_n2_vmstyle_u4_0381_frozen(double*,const double*,size_t);
-          int main(){ Buf in(1408),out(1408),ref(1408); void*p=exp53_xnnpack_create(2);if(!p)return 7;std::cout<<std::fixed<<std::setprecision(9);for(int d=0;d<2;d++)for(size_t n:sizes()){fill_input(in.p,n,d);exp53_n2_vmstyle_u4_0381_frozen(ref.p,in.p,n);double best=1e99;size_t bt=0;int bm=0;for(int m=0;m<4;m++)for(size_t tile:{size_t(64),size_t(96),size_t(128),size_t(192),size_t(256),size_t(384),size_t(512)}){exp53_xnnpack_run_mode(p,out.p,in.p,n,tile,m);if(std::memcmp(out.p,ref.p,n*8))continue;double t=bench_input([&]{exp53_xnnpack_run_mode(p,out.p,in.p,n,tile,m);},n,calls_for(n),5);if(t<best){best=t;bt=tile;bm=m;}}if(best>1e90)return 9;std::cout<<"RUNTIME lib=xnnpack domain="<<(d?"mid":"unit")<<" n="<<n<<" ns="<<best<<" tile="<<bt<<" mode="<<bm<<" bitdiff=0\n";}exp53_xnnpack_destroy(p);}
-          EOF
-
-      - name: Build all component executables
+      - name: Build isolated process microbenchmarks
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
           set -euo pipefail
-          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
           ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
-          CFLAGS='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
-          CXXFLAGS="$CFLAGS -std=c++17"
-          "$ICX" $CFLAGS -c exp53_n2_vmstyle_u4_0381_frozen.c -o /tmp/component-map/frozen.o
-          "$ICPX" $CXXFLAGS -I/tmp/component-map /tmp/component-map/body_frozen.cpp /tmp/component-map/frozen.o -lpthread -lm -o /tmp/component-map/body_frozen
-          "$ICPX" $CXXFLAGS -I/tmp/component-map -I/tmp/turbo exp53_turbo_0101_2000_candidate.cpp /tmp/component-map/body_turbo.cpp -lpthread -lm -o /tmp/component-map/body_turbo
-          "$ICPX" $CXXFLAGS -I/tmp/component-map -I/tmp/highway exp53_highway_0101_2000_candidate.cpp /tmp/component-map/body_highway.cpp -lpthread -lm -o /tmp/component-map/body_highway
-          "$ICPX" $CXXFLAGS -I. -I/tmp/component-map -I/tmp/fastflow /tmp/component-map/sched_fastflow.cpp -lpthread -lm -o /tmp/component-map/sched_fastflow
-          "$ICPX" $CXXFLAGS -I/tmp/component-map /tmp/component-map/sched_custom2.cpp -lpthread -lm -o /tmp/component-map/sched_custom2
-          "$ICPX" $CXXFLAGS -I. -I/tmp/component-map -I/tmp/fastflow /tmp/component-map/runtime_fastflow.cpp /tmp/component-map/frozen.o -lpthread -lm -o /tmp/component-map/runtime_fastflow
-          "$ICPX" $CXXFLAGS -I. -I/tmp/component-map /tmp/component-map/runtime_custom2.cpp /tmp/component-map/frozen.o -lpthread -lm -o /tmp/component-map/runtime_custom2
+          CXX='-O3 -xGRANITERAPIDS -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -std=c++17'
+          "$ICPX" $CXX -I/tmp/process-map -I/tmp/turbo -I/tmp/highway /tmp/process-map/simd.cpp -o /tmp/process-map/simd
           PTHREAD_A="$(find -L /tmp/xnn-build -type f -name 'libpthreadpool.a' -print -quit)"
-          XNN_A="$(find -L /tmp/xnn-build -type f -name 'libXNNPACK.a' -print -quit)"
-          CPUINFO_A="$(find -L /tmp/xnn-build -type f -name 'libcpuinfo.a' -print -quit)"
           PTHREAD_INC="$(find -L /tmp/xnn-build -type f -name pthreadpool.h -printf '%h\n' -quit)"
-          test -n "$PTHREAD_A"; test -n "$XNN_A"; test -n "$CPUINFO_A"; test -n "$PTHREAD_INC"
-          "$ICPX" $CXXFLAGS -I/tmp/component-map -I/tmp/xnnpack/include -I"$PTHREAD_INC" /tmp/component-map/sched_xnn.cpp -Wl,--start-group "$XNN_A" "$PTHREAD_A" "$CPUINFO_A" -Wl,--end-group -lpthread -lm -ldl -o /tmp/component-map/sched_xnn
-          "$ICPX" $CXXFLAGS -I/tmp/component-map -I/tmp/xnnpack/include -I"$PTHREAD_INC" exp53_xnnpack_internal_0101_1400_candidate.cpp /tmp/component-map/runtime_xnn.cpp /tmp/component-map/frozen.o -Wl,--start-group "$XNN_A" "$PTHREAD_A" "$CPUINFO_A" -Wl,--end-group -lpthread -lm -ldl -o /tmp/component-map/runtime_xnn
+          if [[ -z "$PTHREAD_INC" ]]; then PTHREAD_INC="$(find -L /tmp/xnnpack -type f -name pthreadpool.h -printf '%h\n' -quit)"; fi
+          "$ICPX" $CXX -I/tmp/process-map -I"$PTHREAD_INC" /tmp/process-map/xnn_sched.cpp "$PTHREAD_A" -lpthread -o /tmp/process-map/xnn_sched
+          "$ICPX" $CXX -I/tmp/process-map -I/tmp/fastflow /tmp/process-map/ff_sched.cpp -lpthread -o /tmp/process-map/ff_sched
+          "$ICPX" $CXX -I/tmp/process-map /tmp/process-map/custom_sched.cpp -lpthread -o /tmp/process-map/custom_sched
 
-      - name: Run 100-1400 component mapping
+      - name: Run isolated process mapping
         if: steps.cpu.outputs.eligible == '1'
-        env:
-          MKL_NUM_THREADS: '1'
-          OMP_NUM_THREADS: '1'
         shell: bash
         run: |
           set -euo pipefail
-          OUT=/tmp/component-map/raw.txt
+          OUT=/tmp/process-map/raw.txt
           : > "$OUT"
-          {
-            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
-            echo "HEAD=$(git rev-parse HEAD)"
-            echo "RANGE=100-1400"
-            echo "PROCESS=BODY: frozen-native,turbo,highway"
-            echo "PROCESS=TAIL: frozen-native,turbo,highway"
-            echo "PROCESS=SCHED: xnnpack,fastflow,custom2"
-            echo "PROCESS=RUNTIME_PARTITION: xnnpack,fastflow,custom2"
-            echo "N/A: turbo/highway do not own a generic scheduler; xnnpack/fastflow/custom2 do not replace frozen math body in this experiment"
-          } | tee -a "$OUT"
-          taskset -c 0 /tmp/component-map/body_frozen | tee -a "$OUT"
-          taskset -c 0 /tmp/component-map/body_turbo | tee -a "$OUT"
-          taskset -c 0 /tmp/component-map/body_highway | tee -a "$OUT"
-          taskset -c 0,2 /tmp/component-map/sched_xnn | tee -a "$OUT"
-          taskset -c 0,2 /tmp/component-map/sched_fastflow | tee -a "$OUT"
-          taskset -c 0,2 /tmp/component-map/sched_custom2 | tee -a "$OUT"
-          taskset -c 0,2 /tmp/component-map/runtime_xnn | tee -a "$OUT"
-          taskset -c 0,2 /tmp/component-map/runtime_fastflow | tee -a "$OUT"
-          taskset -c 0,2 /tmp/component-map/runtime_custom2 | tee -a "$OUT"
-          ! grep -Eq 'bitdiff=[1-9][0-9]*' "$OUT"
-          grep -q '^BODY lib=turbo domain=unit n=1400 ' "$OUT"
-          grep -q '^BODY lib=highway domain=unit n=1400 ' "$OUT"
-          grep -q '^SCHED lib=xnnpack n=1400 ' "$OUT"
-          grep -q '^SCHED lib=fastflow n=1400 ' "$OUT"
-          grep -q '^SCHED lib=custom2 n=1400 ' "$OUT"
-          grep -q '^RUNTIME lib=xnnpack domain=unit n=1400 ' "$OUT"
-          grep -q '^RUNTIME lib=fastflow domain=unit n=1400 ' "$OUT"
-          grep -q '^RUNTIME lib=custom2 domain=unit n=1400 ' "$OUT"
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee -a "$OUT"
+          echo 'RANGE=100-1400; each PROCESS row is an isolated mechanical stage, not a whole batch implementation' | tee -a "$OUT"
+          taskset -c 0 /tmp/process-map/simd | tee -a "$OUT"
+          taskset -c 0,2 /tmp/process-map/xnn_sched | tee -a "$OUT"
+          taskset -c 0,2 /tmp/process-map/ff_sched | tee -a "$OUT"
+          taskset -c 0,2 /tmp/process-map/custom_sched | tee -a "$OUT"
+          grep -q '^PROCESS name=gather lib=turbo ' "$OUT"
+          grep -q '^PROCESS name=gather lib=highway ' "$OUT"
+          grep -q '^PROCESS name=dispatch_sync lib=xnnpack ' "$OUT"
+          grep -q '^PROCESS name=dispatch_sync lib=fastflow ' "$OUT"
+          grep -q '^PROCESS name=dispatch_sync lib=custom2 ' "$OUT"
 
-      - name: Aggregate process winners
+      - name: Aggregate winner per isolated process
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import pathlib,re,statistics
-          lines=pathlib.Path('/tmp/component-map/raw.txt').read_text().splitlines()
+          import pathlib,statistics
           rows=[]
-          for ln in lines:
-              if ln.startswith(('BODY ','TAIL ','SCHED ','RUNTIME ')):
-                  kind=ln.split()[0]; kv=dict(x.split('=',1) for x in ln.split()[1:] if '=' in x); rows.append((kind,kv))
-          out=['EXP53 100-1400 PROCESS -> LIBRARY MAP']
-          bands=[(100,255),(256,511),(512,899),(900,1199),(1200,1400)]
-          for kind in ('BODY','RUNTIME'):
-              out.append(''); out.append(kind+' WINNERS')
-              for dom in ('unit','mid'):
-                  for lo,hi in bands:
-                      c={}
-                      for k,kv in rows:
-                          if k==kind and kv.get('domain')==dom:
-                              n=int(kv['n'])
-                              if lo<=n<=hi: c.setdefault(kv['lib'],[]).append(float(kv['ns']))
-                      if c:
-                          m={a:statistics.median(v) for a,v in c.items()}; w=min(m,key=m.get)
-                          out.append(f'{kind} domain={dom} band={lo}-{hi} winner={w} median_ns={m[w]:.9f} ranking='+','.join(f'{a}:{b:.9f}' for a,b in sorted(m.items(),key=lambda z:z[1])))
-          out.append(''); out.append('SCHED WINNER')
-          c={}
-          for k,kv in rows:
-              if k=='SCHED': c.setdefault(kv['lib'],[]).append(float(kv['ns_call']))
-          m={a:statistics.median(v) for a,v in c.items()}; w=min(m,key=m.get)
-          out.append('SCHED winner='+w+' median_ns_call='+f'{m[w]:.3f}'+' ranking='+','.join(f'{a}:{b:.3f}' for a,b in sorted(m.items(),key=lambda z:z[1])))
-          out.append(''); out.append('TAIL WINNERS')
-          for dom in ('unit','mid'):
-              c={}
-              for k,kv in rows:
-                  if k=='TAIL' and kv.get('domain')==dom: c.setdefault(kv['lib'],[]).append(float(kv['ns']))
-              m={a:statistics.median(v) for a,v in c.items()}; w=min(m,key=m.get)
-              out.append(f'TAIL domain={dom} winner={w} median_ns={m[w]:.9f} ranking='+','.join(f'{a}:{b:.9f}' for a,b in sorted(m.items(),key=lambda z:z[1])))
-          out.append(''); out.append('APPLICABILITY')
-          out.append('BODY/TAIL: Turbo, Highway, frozen-native. XNNPACK/FastFlow/custom2 are execution layers here, not math substitutes.')
-          out.append('SCHED/RUNTIME_PARTITION: XNNPACK, FastFlow, custom2. Turbo/Highway generic scheduler = N/A in 100-1400.')
-          pathlib.Path('/tmp/component-map/summary.txt').write_text('\n'.join(out)+'\n')
+          for ln in pathlib.Path('/tmp/process-map/raw.txt').read_text().splitlines():
+              if not ln.startswith('PROCESS '): continue
+              kv=dict(x.split('=',1) for x in ln.split()[1:])
+              rows.append((kv['name'],kv['lib'],int(kv['n']),float(kv['ns'])))
+          names=sorted({r[0] for r in rows})
+          out=['EXP53 ISOLATED PROCESS -> BEST MECHANISM','No whole-library or batch-size routing is inferred here. Winner is selected independently for each mechanical process across n=100..1400.']
+          for name in names:
+              libs=sorted({l for p,l,n,t in rows if p==name})
+              meds={l:statistics.median(t for p,ll,n,t in rows if p==name and ll==l) for l in libs}
+              win=min(meds,key=meds.get)
+              rank=','.join(f'{l}:{meds[l]:.9f}' for l in sorted(meds,key=meds.get))
+              out.append(f'PROCESS_WINNER name={name} winner={win} median_ns={meds[win]:.9f} ranking={rank}')
+          out += ['TAIL name=tail_1_31 winner=frozen-native reason=Turbo_and_Highway_candidates_delegate_n<32_to_the_same_frozen_tail; scheduler libraries do not own tail math.',
+                  'AFFINITY name=affinity winner=custom2-mechanism reason=custom2 explicitly pins caller CPU0/helper CPU2; XNNPACK/FastFlow placement here is imposed externally by taskset, not owned by those libraries.',
+                  'STORE_POLICY name=store_policy winner=temporal/native reason=100-1400 is hot-cache microbatch territory; NT changes output-use semantics and is not treated as a fair default process winner.']
+          pathlib.Path('/tmp/process-map/summary.txt').write_text('\n'.join(out)+'\n')
           print('\n'.join(out))
           PY
 
-      - name: Upload component mapping
+      - name: Upload isolated process map
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/upload-artifact@v4
         with:
-          name: exp53-component-map-100-1400-${{ matrix.shard }}
+          name: exp53-isolated-process-map-100-1400-${{ matrix.shard }}
           path: |
-            /tmp/component-map/raw.txt
-            /tmp/component-map/summary.txt
+            /tmp/process-map/raw.txt
+            /tmp/process-map/summary.txt
