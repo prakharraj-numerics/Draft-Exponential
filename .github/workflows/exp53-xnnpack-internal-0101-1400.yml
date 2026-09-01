@@ -57,7 +57,9 @@ jobs:
           MKLROOT=/opt/intel/oneapi/mkl/latest
           PTHREADPOOL_INC=$(find /tmp/XNNPACK -path '*/pthreadpool*/include' -type d | head -1)
           test -n "$PTHREADPOOL_INC"
-          cat > /tmp/CMakeLists.txt <<EOF
+          rm -rf /tmp/exp53-xnn-src /tmp/xnn-exp-build /tmp/xnn-subbuild
+          mkdir -p /tmp/exp53-xnn-src
+          cat > /tmp/exp53-xnn-src/CMakeLists.txt <<EOF
           cmake_minimum_required(VERSION 3.15)
           project(exp53_xnn C CXX)
           set(CMAKE_C_STANDARD 11)
@@ -78,7 +80,7 @@ jobs:
           target_link_options(bench PRIVATE -Wl,-rpath,"$MKLROOT/lib" -Wl,-rpath,/opt/intel/oneapi/compiler/latest/lib)
           target_link_libraries(bench PRIVATE frozen XNNPACK pthreadpool mkl_intel_lp64 mkl_sequential mkl_core pthread m dl)
           EOF
-          cmake -S /tmp -B /tmp/xnn-exp-build -DCMAKE_BUILD_TYPE=Release
+          cmake -S /tmp/exp53-xnn-src -B /tmp/xnn-exp-build -DCMAKE_BUILD_TYPE=Release
           cmake --build /tmp/xnn-exp-build --target bench -j2
 
       - name: Benchmark
