@@ -1,0 +1,71 @@
+name: EXP53 Intel PT hunt v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/exp53-intel-pt-hunt-v2.yml'
+
+jobs:
+  hunt:
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Identify CPU and probe Intel PT only on Intel
+        shell: bash
+        run: |
+          set -u
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          VENDOR="$(lscpu | awk -F: '/Vendor ID/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "SHARD=${{ matrix.shard }}"
+          echo "CPU=$MODEL"
+          echo "VENDOR=$VENDOR"
+
+          if [[ "$VENDOR" != "GenuineIntel" ]]; then
+            echo INTEL_HOST=0
+            echo PT_VERDICT=NOT_TESTED_NON_INTEL
+            exit 0
+          fi
+
+          echo INTEL_HOST=1
+          grep -m1 '^flags' /proc/cpuinfo || true
+          echo '--- event sources ---'
+          ls -1 /sys/bus/event_source/devices 2>/dev/null | sort || true
+
+          if [[ -d /sys/bus/event_source/devices/intel_pt ]]; then
+            echo INTEL_PT_SYSFS=1
+          else
+            echo INTEL_PT_SYSFS=0
+          fi
+
+          echo '--- perf list intel_pt ---'
+          perf list 2>&1 | grep -i -A8 -B2 'intel_pt' || true
+
+          echo '--- permissions ---'
+          cat /proc/sys/kernel/perf_event_paranoid || true
+          sudo sysctl -w kernel.perf_event_paranoid=-1 || true
+          cat /proc/sys/kernel/perf_event_paranoid || true
+
+          echo '--- PT record test ---'
+          rm -f /tmp/pt.data
+          set +e
+          perf record -e intel_pt// -o /tmp/pt.data -- /bin/true >/tmp/pt.stdout 2>/tmp/pt.stderr
+          rc=$?
+          set -e
+          echo INTEL_PT_RECORD_RC=$rc
+          cat /tmp/pt.stdout || true
+          cat /tmp/pt.stderr || true
+
+          if [[ $rc -eq 0 && -s /tmp/pt.data ]]; then
+            echo INTEL_PT_AVAILABLE=1
+            echo PT_VERDICT=AVAILABLE
+            ls -l /tmp/pt.data
+            perf script -i /tmp/pt.data --itrace=i1us 2>&1 | head -80 || true
+          else
+            echo INTEL_PT_AVAILABLE=0
+            echo PT_VERDICT=UNAVAILABLE_ON_INTEL_HOST
+          fi
