@@ -1,0 +1,219 @@
+name: EXP53 resource disadvantage attack
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/exp53-resource-disadvantage-attack.yml'
+      - 'experiments/exp53_resource_attack_candidates.cpp'
+      - 'experiments/bench_exp53_resource_attack_native.cpp'
+      - 'experiments/bench_exp53_resource_attack_sde.cpp'
+
+jobs:
+  attack:
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require exact Xeon 6973P-C
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          VENDOR="$(lscpu | awk -F: '/Vendor ID/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL VENDOR=$VENDOR"
+          if [[ "$VENDOR" == GenuineIntel && "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_EXACT_XEON
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Install Intel SDE
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/attack/sdekit && cd /tmp/attack/sdekit
+          curl -fsSL -o sde.tar.xz https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
+          echo '94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50  sde.tar.xz' | sha256sum -c -
+          tar -xf sde.tar.xz
+          SDE="$(find /tmp/attack/sdekit -maxdepth 2 -type f -name sde64 -print -quit)"
+          test -x "$SDE"
+          echo "SDE=$SDE" >> "$GITHUB_ENV"
+
+      - name: Build attacks
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/attack
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          COMMON='-O3 -g -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          "$ICPX" -std=c++17 $COMMON -Iproduction -c experiments/exp53_resource_attack_candidates.cpp -o /tmp/attack/candidates.o
+          "$ICPX" -std=c++17 $COMMON -Iproduction -I"$MKLROOT/include" experiments/bench_exp53_resource_attack_native.cpp /tmp/attack/candidates.o \
+            -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/attack/native
+          "$ICPX" -std=c++17 $COMMON -Iproduction -I"$MKLROOT/include" experiments/bench_exp53_resource_attack_sde.cpp /tmp/attack/candidates.o \
+            -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/attack/sdebench
+          objdump -d -C /tmp/attack/candidates.o > /tmp/attack/candidates.disasm.txt
+          objdump -d -C /tmp/attack/native > /tmp/attack/native.disasm.txt
+          objdump -d --disassemble=exp53_attack_shape_generation_wait /tmp/attack/native > /tmp/attack/genwait.disasm.txt
+          objdump -d --disassemble=exp53_attack_shape_completion_wait /tmp/attack/native > /tmp/attack/compwait.disasm.txt
+          nm -n /tmp/attack/sdebench | grep -E ' exp53_attack_profile_(start|stop)$'
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo 'METHOD=isolated_G_S_FULL_FACTORED_plus_native_scheduler_plus_kernel_SDE'
+            echo 'PRODUCTION=UNTOUCHED'
+          } > /tmp/attack/meta.txt
+
+      - name: Inspect generated attack instructions
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '=== gather / scalef / spills ==='
+            grep -Ei 'gather|scalef|vmov.*%zmm|%zmm.*\(%rsp\)|\(%rsp\).*%zmm' /tmp/attack/candidates.disasm.txt || true
+            echo '=== scheduler lock / indirect ==='
+            grep -Ei 'lock|call.*\*|jmp.*\*' /tmp/attack/native.disasm.txt || true
+            echo '=== generation wait ==='; cat /tmp/attack/genwait.disasm.txt
+            echo '=== completion wait ==='; cat /tmp/attack/compwait.disasm.txt
+          } | tee /tmp/attack/disasm_audit.txt
+          python3 - <<'PY' | tee /tmp/attack/scheduler_shape.txt
+          import pathlib,re
+          def loop(path):
+              ins=[]
+              for line in pathlib.Path(path).read_text(errors='replace').splitlines():
+                  m=re.match(r'^\s*([0-9a-f]+):\s+(?:[0-9a-f]{2}\s+)+\s*([a-zA-Z0-9_.]+)\s*(.*)$',line)
+                  if m: ins.append((int(m.group(1),16),m.group(2).lower(),m.group(3)))
+              pos={a:i for i,(a,_,_) in enumerate(ins)}; cand=[]
+              for j,(a,mn,op) in enumerate(ins):
+                  if not mn.startswith('j'): continue
+                  q=re.search(r'([0-9a-f]+)',op)
+                  if not q: continue
+                  t=int(q.group(1),16)
+                  if t in pos and t<a:
+                      b=ins[pos[t]:j+1]
+                      if any(x[1]=='pause' for x in b): cand.append(b)
+              if not cand: return 0
+              return min(map(len,cand))
+          print('ATTACK_GENERATION_INSTR_PER_SPIN='+str(loop('/tmp/attack/genwait.disasm.txt')))
+          print('ATTACK_COMPLETION_INSTR_PER_SPIN='+str(loop('/tmp/attack/compwait.disasm.txt')))
+          PY
+
+      - name: Accuracy attack screen
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          : > /tmp/attack/accuracy.txt
+          for v in base g s full fact; do
+            /tmp/attack/sdebench "$v" 200000 | tee -a /tmp/attack/accuracy.txt
+          done
+
+      - name: Native wall and scheduler attack
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          : > /tmp/attack/native_results.txt
+          for n in 700 3500 15000 50000 1000000 2000000; do
+            taskset -c 0,2 /tmp/attack/native "$n" | tee -a /tmp/attack/native_results.txt
+          done
+
+      - name: Kernel-only SDE resource attack
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          for n in 700 50000; do
+            for v in base g s full fact intel noop; do
+              d="/tmp/attack/mix-${v}-${n}"; mkdir -p "$d"
+              ( cd "$d"; "$SDE" -mix -iform -global_region \
+                  -control 'start:address:exp53_attack_profile_start,stop:address:exp53_attack_profile_stop' \
+                  -omix mix.txt -- /tmp/attack/sdebench "$v" "$n" | tee program.txt )
+            done
+          done
+
+      - name: Aggregate attack verdict
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee /tmp/attack/results.txt
+          import pathlib,re
+          root=pathlib.Path('/tmp/attack')
+          print((root/'meta.txt').read_text(),end='')
+          print((root/'scheduler_shape.txt').read_text(),end='')
+          print('--- ACCURACY ---'); print((root/'accuracy.txt').read_text(),end='')
+          print('--- NATIVE ---'); print((root/'native_results.txt').read_text(),end='')
+          def counts(path):
+              text=path.read_text(errors='replace')
+              blocks=re.findall(r'# \$global-dynamic-counts(.*?)# END_GLOBAL_DYNAMIC_STATS',text,re.S)
+              sec=blocks[-1] if blocks else text; out={}
+              for k,v in re.findall(r'^\s*(\S+)\s+([0-9]+)\s*$',sec,re.M): out[k]=int(v)
+              if out.get('*total',0)<=0:
+                  ts=[int(x) for x in re.findall(r'^\*total\s+([0-9]+)\s*$',text,re.M)]
+                  if ts: out['*total']=ts[-1]
+              return out
+          def delta(a,b,k):return max(0,a.get(k,0)-b.get(k,0))
+          def membytes(a,b):
+              total=0
+              for k in set(a)|set(b):
+                  m=re.match(r'^\*mem-(?:read|write)-(\d+)$',k)
+                  if m: total+=int(m.group(1))*max(0,a.get(k,0)-b.get(k,0))
+              return total
+          def branches(a,b):
+              keys=('*category-CALL','*category-COND_BR','*category-RET','*category-UNCOND_BR','*category-SYSCALL','*category-SYSRET')
+              return sum(delta(a,b,k) for k in keys)
+          def gather(a,b):
+              return sum(max(0,a.get(k,0)-b.get(k,0)) for k in set(a)|set(b) if 'GATHER' in k.upper())
+          def scalef(a,b):
+              return sum(max(0,a.get(k,0)-b.get(k,0)) for k in set(a)|set(b) if 'SCALEF' in k.upper())
+          print('--- SDE RESOURCE TABLE ---')
+          for n in (700,50000):
+              noop=counts(root/f'mix-noop-{n}'/'mix.txt')
+              rows={}
+              for v in ('base','g','s','full','fact','intel'):
+                  c=counts(root/f'mix-{v}-{n}'/'mix.txt')
+                  inst=delta(c,noop,'*total'); mb=membytes(c,noop); ga=gather(c,noop); sc=scalef(c,noop); br=branches(c,noop)
+                  # SDE records one 8-byte memory operand for a qword gather instruction;
+                  # semantic lane payload is 8 lanes*8 B, so add the missing 56 B/gather.
+                  semantic=mb+56*ga
+                  rows[v]=(inst,semantic,br,ga,sc)
+                  print(f'RESOURCE n={n} variant={v} instr_el={inst/n:.9f} semantic_logical_B_el={semantic/n:.9f} branches_el={br/n:.9f} gathers_el={ga/n:.9f} scalef_el={sc/n:.9f}')
+              bi=rows['base'][0]/n; fi=rows['full'][0]/n; ii=rows['intel'][0]/n
+              bb=rows['base'][1]/n; fb=rows['full'][1]/n; ib=rows['intel'][1]/n; xb=rows['fact'][1]/n
+              print(f'VERDICT n={n} full_instr_vs_base={bi/fi:.6f} intel_instr_over_full={ii/fi:.6f} full_semantic_bytes_vs_base={bb/fb:.6f} intel_bytes_over_full={ib/fb:.6f} fact_bytes_vs_base={bb/xb if xb else 0:.6f}')
+          PY
+
+      - name: Upload attack bundle
+        if: always() && steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-resource-attack-${{ matrix.shard }}
+          path: /tmp/attack
+          if-no-files-found: warn
