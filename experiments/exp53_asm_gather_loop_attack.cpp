@@ -18,7 +18,7 @@ static inline __m512i exp53_full_gather_noinit(__m512i idx) {
     const long long *base=(const long long*)N2_FROZEN_TAB128;
     __asm__ volatile(
         "kxnorw %%k1, %%k1, %%k1\n\t"
-        "vpgatherqq (%[base],%[idx],8), %[dst]{%%k1}\n\t"
+        "vpgatherqq (%[base],%[idx],8), %[dst]%{%%k1%}\n\t"
         : [dst] "=&v" (dst)
         : [base] "r" (base), [idx] "v" (idx)
         : "k1", "memory");
