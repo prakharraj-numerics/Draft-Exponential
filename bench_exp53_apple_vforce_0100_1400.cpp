@@ -81,6 +81,13 @@ int main() {
                     std::cerr << "nonfinite domain=" << domain << " n=" << n << " i=" << i << "\n";
                     return 3;
                 }
+                const double rel = std::abs(out.p[i] - ref) / ref;
+                if (rel > 8.0 * std::numeric_limits<double>::epsilon()) {
+                    std::cerr << "accuracy domain=" << domain << " n=" << n << " i=" << i
+                              << " got=" << std::setprecision(17) << out.p[i]
+                              << " ref=" << ref << " rel=" << rel << "\n";
+                    return 4;
+                }
                 const uint64_t a = ordered_bits(out.p[i]);
                 const uint64_t b = ordered_bits(ref);
                 const uint64_t ulp = a > b ? a - b : b - a;
