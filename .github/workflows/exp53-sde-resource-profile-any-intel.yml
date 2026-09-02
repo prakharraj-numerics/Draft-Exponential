@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - '.github/workflows/exp53-sde-resource-profile-any-intel.yml'
+      - 'bench_exp53_sde_resources.cpp'
 
 jobs:
   profile:
@@ -71,7 +72,8 @@ jobs:
           "$ICPX" -std=c++17 $COMMON -Iproduction -I/home/runner/vcl-exp53 -c production/exp53_vcl_u2z_0100_frozen.cpp -o /tmp/sdeprof/vcl.o
           "$ICX" $COMMON -Iproduction -Dexp53_n2_fused_u4_038_frozen=exp53_n2_fused_u4_038_frozen_ntlocal -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_n2_vmstyle_u4_0381_frozen_ntlocal -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/sdeprof/nt.o
           "$ICPX" -std=c++17 $COMMON -Iproduction -I"$HWY" -I"$MKLROOT/include" bench_exp53_sde_resources.cpp /tmp/sdeprof/vcl.o /tmp/sdeprof/nt.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/sdeprof/bench
-          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=Intel_documented_FACE_DEAD_SSC_region_multithread'; } | tee /tmp/sdeprof/meta.txt
+          objdump -d /tmp/sdeprof/bench | grep -B2 -A2 -E '64 67 90' | head -20 || true
+          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=Intel_documented_FACE_DEAD_SSC_region_multithread_forced_raw_marker'; } | tee /tmp/sdeprof/meta.txt
       - name: Profile all batches inside SSC region
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -109,7 +111,6 @@ jobs:
               return {'inst':g('Total instructions executed:'),'fma':g('Total FMA instructions executed:'),'dp':g('Double prec. FLOPs:'),'rd':g('Total bytes read:'),'wr':g('Total bytes written:')}
           def isa(p):
               t=p.read_text(errors='replace'); totals={'avx512':0,'avx256':0,'avx128':0,'scalar':0}
-              # SDE emits dynamic-count sections per participating thread. Sum each meta category.
               for sec in re.split(r'# EMIT_DYNAMIC_STATS FOR TID',t)[1:]:
                   end=sec.find('# END_DYNAMIC_STATS'); sec=sec if end<0 else sec[:end]
                   for key,outkey in [('*avx512','avx512'),('*avx256','avx256'),('*avx128','avx128'),('*scalar-simd','scalar')]:
