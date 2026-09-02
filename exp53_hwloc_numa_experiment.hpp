@@ -48,8 +48,8 @@ public:
     bool usable() const noexcept { return usable_; }
     bool same_numa_node() const noexcept { return same_node_; }
     int numa_node() const noexcept { return same_node_ ? node0_ : -1; }
-    hwloc_obj_type_t common_ancestor_type() const noexcept {
-        return common_ancestor_ ? common_ancestor_->type : HWLOC_OBJ_TYPE_NONE;
+    int common_ancestor_type() const noexcept {
+        return common_ancestor_ ? static_cast<int>(common_ancestor_->type) : -1;
     }
 
     double* allocate(size_t n) const {
