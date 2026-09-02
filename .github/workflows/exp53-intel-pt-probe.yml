@@ -6,7 +6,7 @@ on:
     paths:
       - '.github/workflows/exp53-intel-pt-probe.yml'
 
-# fresh allocation probe 2
+# fresh allocation probe 3
 jobs:
   probe:
     timeout-minutes: 15
