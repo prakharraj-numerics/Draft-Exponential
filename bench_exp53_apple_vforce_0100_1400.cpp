@@ -68,8 +68,12 @@ int main() {
     size_t checked = 0;
     uint64_t max_ulp = 0;
 
+    std::vector<size_t> sizes;
+    for (size_t n = 100; n <= 1400; n += 50) sizes.push_back(n);
+    sizes.insert(sizes.end(), {3000, 10000, 60000});
+
     for (int domain = 0; domain < 2; ++domain) {
-        for (size_t n = 100; n <= 1400; n += 50) {
+        for (size_t n : sizes) {
             Aligned in(n), out(n);
             fill(in.p, n, domain);
             const int count = static_cast<int>(n);
