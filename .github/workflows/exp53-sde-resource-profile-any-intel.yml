@@ -86,6 +86,7 @@ jobs:
           echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee /tmp/sdeprof/meta.txt
           echo "HEAD=$(git rev-parse HEAD)" | tee -a /tmp/sdeprof/meta.txt
           echo "SDE_VERSION=10.13.1" | tee -a /tmp/sdeprof/meta.txt
+          echo "METHOD=full_program_dynamic_counts_minus_zero_measured_call_baseline" | tee -a /tmp/sdeprof/meta.txt
       - name: Profile all batches
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -98,33 +99,66 @@ jobs:
           for n in 100 700 3500 15000 50000 1000000 2000000; do
             calls="$(calls_for "$n")"
             for stack in ours intel; do
-              d="/tmp/sdeprof/${stack}-${n}"; mkdir -p "$d"
-              (cd "$d"; "$SDE" -mix -iform -dyn_mask_profile -footprint -global_region -start_ssc_mark FACE:repeat -stop_ssc_mark DEAD:repeat -top_blocks 0 -omix mix.txt -ofootprint footprint.txt -- /tmp/sdeprof/bench "$stack" "$n" "$calls" | tee program.txt; python3 /tmp/sde-flops/intel_sde_flops.py mix.txt sde-dyn-mask-profile.txt | tee flops.txt)
+              for mode in base work; do
+                if [[ "$mode" == base ]]; then c=0; else c="$calls"; fi
+                d="/tmp/sdeprof/${stack}-${n}-${mode}"; mkdir -p "$d"
+                echo "PROFILE stack=$stack n=$n mode=$mode calls=$c"
+                (
+                  cd "$d"
+                  "$SDE" -mix -iform -dyn_mask_profile -top_blocks 0 -omix mix.txt -- /tmp/sdeprof/bench "$stack" "$n" "$c" | tee program.txt
+                  python3 /tmp/sde-flops/intel_sde_flops.py mix.txt sde-dyn-mask-profile.txt | tee flops.txt
+                )
+              done
             done
           done
-      - name: Aggregate
+      - name: Aggregate differential resource table
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY' | tee /tmp/sdeprof/results.txt
           import pathlib,re
           root=pathlib.Path('/tmp/sdeprof'); print((root/'meta.txt').read_text(),end='')
-          sizes=[100,700,3500,15000,50000,1000000,2000000]; calls={100:500,700:100,3500:20,15000:5,50000:2,1000000:1,2000000:1}
+          sizes=[100,700,3500,15000,50000,1000000,2000000]
+          calls={100:500,700:100,3500:20,15000:5,50000:2,1000000:1,2000000:1}
           def fparse(p):
             t=p.read_text(errors='replace'); k=t.rfind('Sum:'); t=t[k:] if k>=0 else t
-            def g(s):
-              m=re.search(re.escape(s)+r'\s*([0-9]+)',t); return int(m.group(1)) if m else None
-            return g('Total instructions executed:'),g('Total FMA instructions executed:'),g('Double precision FLOPs:'),g('Total bytes read:'),g('Total bytes written:')
+            def g(*labels):
+              for s in labels:
+                m=re.search(re.escape(s)+r'\s*([0-9]+)',t)
+                if m: return int(m.group(1))
+              return None
+            return {
+              'inst':g('Total instructions executed:'),
+              'fma':g('Total FMA instructions executed:'),
+              'dp':g('Double prec. FLOPs:','Double precision FLOPs:'),
+              'rd':g('Total bytes read:'),
+              'wr':g('Total bytes written:'),
+            }
           def iparse(p):
-            t=p.read_text(errors='replace'); k=t.rfind('# $global-dynamic-counts'); t=t[k:] if k>=0 else t
-            d={a:int(b) for a,b in re.findall(r'^\*isa-ext-([^\s]+)\s+([0-9]+)\s*$',t,re.M)}
-            return sum(v for k,v in d.items() if 'AVX512' in k.upper()),sum(v for k,v in d.items() if 'AVX' in k.upper()),d
+            t=p.read_text(errors='replace')
+            d={}
+            for a,b in re.findall(r'^\*isa-ext-([^\s]+)\s+([0-9]+)\s*$',t,re.M):
+              d[a]=d.get(a,0)+int(b)
+            return {
+              'avx512':sum(v for k,v in d.items() if 'AVX512' in k.upper()),
+              'avx':sum(v for k,v in d.items() if 'AVX' in k.upper()),
+            }
+          print('TABLE_HEADER n stack elements instructions_per_el fma_inst_per_el dp_flops_per_el bytes_read_per_el bytes_written_per_el bytes_total_per_el avx512_inst_per_el avx_family_inst_per_el')
           for n in sizes:
             for stack in ('ours','intel'):
-              d=root/f'{stack}-{n}'; inst,fma,dp,rd,wr=fparse(d/'flops.txt'); a512,avx,isa=iparse(d/'mix.txt'); e=n*calls[n]
-              if inst is None: raise SystemExit(f'parse failed {d}')
+              b=fparse(root/f'{stack}-{n}-base'/'flops.txt'); w=fparse(root/f'{stack}-{n}-work'/'flops.txt')
+              bi=iparse(root/f'{stack}-{n}-base'/'mix.txt'); wi=iparse(root/f'{stack}-{n}-work'/'mix.txt')
+              e=n*calls[n]
+              vals={k:(w[k]-b[k]) if (w[k] is not None and b[k] is not None) else None for k in b}
+              vals['avx512']=wi['avx512']-bi['avx512']; vals['avx']=wi['avx']-bi['avx']
+              if vals['inst'] is None or vals['inst'] <= 0: raise SystemExit(f'bad differential instruction count stack={stack} n={n}: {vals}')
               q=lambda x:-1.0 if x is None else x/e
-              print(f'SDE_FINAL n={n} stack={stack} elements={e} instructions_per_el={q(inst):.9f} fma_inst_per_el={q(fma):.9f} dp_flops_per_el={q(dp):.9f} bytes_read_per_el={q(rd):.9f} bytes_written_per_el={q(wr):.9f} bytes_total_per_el={q((rd or 0)+(wr or 0)):.9f} avx512_inst_per_el={a512/e:.9f} avx_family_inst_per_el={avx/e:.9f}')
+              print(f'SDE_FINAL n={n} stack={stack} elements={e} instructions_per_el={q(vals["inst"]):.9f} '
+                    f'fma_inst_per_el={q(vals["fma"]):.9f} dp_flops_per_el={q(vals["dp"]):.9f} '
+                    f'bytes_read_per_el={q(vals["rd"]):.9f} bytes_written_per_el={q(vals["wr"]):.9f} '
+                    f'bytes_total_per_el={q((vals["rd"] or 0)+(vals["wr"] or 0)):.9f} '
+                    f'avx512_inst_per_el={q(vals["avx512"]):.9f} avx_family_inst_per_el={q(vals["avx"]):.9f}')
           PY
       - name: Upload
         if: steps.cpu.outputs.eligible == '1'
