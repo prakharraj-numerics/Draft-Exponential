@@ -41,9 +41,11 @@ static void exp53_attack_impl(double *__restrict out,
         factor_lo1 = _mm512_castpd_si512(_mm512_setr_pd(
             N2_FROZEN_TAB128[8],N2_FROZEN_TAB128[9],N2_FROZEN_TAB128[10],N2_FROZEN_TAB128[11],
             N2_FROZEN_TAB128[12],N2_FROZEN_TAB128[13],N2_FROZEN_TAB128[14],N2_FROZEN_TAB128[15]));
+        /* Row a=6 is biased +1 ULP.  Offline exhaustive 128-entry analysis
+           reduces factor-product table error from worst 2 ULP to worst 1 ULP. */
         factor_hi = _mm512_castpd_si512(_mm512_setr_pd(
             N2_FROZEN_TAB128[0],N2_FROZEN_TAB128[16],N2_FROZEN_TAB128[32],N2_FROZEN_TAB128[48],
-            N2_FROZEN_TAB128[64],N2_FROZEN_TAB128[80],N2_FROZEN_TAB128[96],N2_FROZEN_TAB128[112]));
+            N2_FROZEN_TAB128[64],N2_FROZEN_TAB128[80],0x1.ae89f995ad3aep+0,N2_FROZEN_TAB128[112]));
     }
 
     size_t i=0;
