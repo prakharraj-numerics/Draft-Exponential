@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -67,8 +68,7 @@ public:
     }
 
     double exp_correctly_rounded(double x, bool& used1024) {
-        mpfr_set_d(x_, x, MPFR_RNDN); // exact: binary64 input fits in 64-bit MPFR significand
-
+        mpfr_set_d(x_, x, MPFR_RNDN);
         mpfr_exp(lo256_, x_, MPFR_RNDD);
         mpfr_exp(hi256_, x_, MPFR_RNDU);
         const double dlo = mpfr_get_d(lo256_, MPFR_RNDN);
@@ -77,7 +77,6 @@ public:
             used1024 = false;
             return dlo;
         }
-
         mpfr_exp(lo1024_, x_, MPFR_RNDD);
         mpfr_exp(hi1024_, x_, MPFR_RNDU);
         const double d2lo = mpfr_get_d(lo1024_, MPFR_RNDN);
@@ -89,7 +88,6 @@ public:
         used1024 = true;
         return d2lo;
     }
-
 private:
     mpfr_t x_, lo256_, hi256_, lo1024_, hi1024_;
 };
@@ -98,7 +96,6 @@ int main() {
     const std::vector<size_t> sizes = {100, 700, 3500, 15000, 50000, 1000000, 2000000};
     Exp53BatchProductionExecutor executor(2);
     MPFRReference refgen;
-
     uint64_t grand_total = 0, grand_exact = 0, grand_one = 0, grand_gt1 = 0;
     uint64_t grand_fallback1024 = 0, grand_maxulp = 0;
 
@@ -110,7 +107,6 @@ int main() {
         uint64_t exact = 0, one = 0, gt1 = 0, fallback1024 = 0, maxulp = 0;
         size_t worst_i = 0;
         double worst_x = 0.0, worst_got = 0.0, worst_ref = 0.0;
-
         for (size_t i = 0; i < n; ++i) {
             bool used1024 = false;
             const double ref = refgen.exp_correctly_rounded(in.p[i], used1024);
@@ -133,7 +129,6 @@ int main() {
         grand_total += n; grand_exact += exact; grand_one += one; grand_gt1 += gt1;
         grand_fallback1024 += fallback1024;
         grand_maxulp = std::max(grand_maxulp, maxulp);
-
         std::cout << "ABSACC n=" << n
                   << " total=" << n
                   << " exact=" << exact
@@ -155,6 +150,5 @@ int main() {
               << " gt1=" << grand_gt1
               << " maxulp=" << grand_maxulp
               << " ref1024=" << grand_fallback1024 << "\n";
-
     return grand_gt1 == 0 ? 0 : 9;
 }
