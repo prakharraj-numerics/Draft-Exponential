@@ -9,11 +9,6 @@
 #include <mkl_vml.h>
 #include "production/exp53_batch_production.hpp"
 
-#ifndef __SSC_MARK
-#define __SSC_MARK(tag) \
-  __asm__ __volatile__("movl %0, %%ebx; .byte 0x64, 0x67, 0x90" :: "i"(tag) : "%ebx", "memory")
-#endif
-
 struct Aligned {
     double* p = nullptr;
     explicit Aligned(size_t n) {
@@ -72,7 +67,7 @@ int main(int argc, char** argv) {
     const size_t n = std::strtoull(argv[2], nullptr, 10);
     const size_t calls = std::strtoull(argv[3], nullptr, 10);
     const std::vector<size_t> allowed = {100,700,3500,15000,50000,1000000,2000000};
-    if ((stack != "ours" && stack != "intel") || calls < 1 ||
+    if ((stack != "ours" && stack != "intel") ||
         std::find(allowed.begin(), allowed.end(), n) == allowed.end()) return 2;
 
     Aligned in(n), out(n), ref(n);
@@ -85,17 +80,16 @@ int main(int argc, char** argv) {
         else vmdExp(static_cast<MKL_INT>(n), in.p, out.p, VML_HA);
     };
 
-    // Warm every lazy path (worker creation, MKL dispatch, cache state) outside SDE's measured region.
-    for (int i = 0; i < 8; ++i) invoke();
+    // One identical warm-up call is present in both K-call and zero-call SDE runs.
+    // Differential subtraction removes this plus loader, dispatch, correctness, and shutdown work.
+    invoke();
     const uint64_t maxulp = cross_check(out.p, ref.p, n);
     if (maxulp > 2) {
         std::cerr << "correctness failure maxulp=" << maxulp << "\n";
         return 4;
     }
 
-    __SSC_MARK(0xFACE);
     for (size_t k = 0; k < calls; ++k) invoke();
-    __SSC_MARK(0xDEAD);
 
     volatile double sink = out.p[(n * 17ULL + calls) % n];
     std::cout << "SDE_RUN stack=" << stack << " n=" << n << " calls=" << calls
