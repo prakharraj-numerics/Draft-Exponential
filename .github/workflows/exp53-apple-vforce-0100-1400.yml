@@ -1,11 +1,11 @@
-name: EXP53 Apple M-series vForce 100-1400 plus 3K 10K 60K
+name: EXP53 Apple M-series vForce batch sweep
 
 on:
   workflow_dispatch:
   push:
     paths:
       - 'bench_exp53_apple_vforce_0100_1400.cpp'
-      - '.github/workflows/exp53-apple-vforce-0100-1400 plus 3K 10K 60K.yml'
+      - '.github/workflows/exp53-apple-vforce-0100-1400.yml'
 
 jobs:
   bench:
@@ -79,7 +79,7 @@ jobs:
       - name: Upload Apple M-series results
         uses: actions/upload-artifact@v4
         with:
-          name: exp53-apple-vforce-100-1400 plus 3K 10K 60K-${{ matrix.shard }}
+          name: exp53-apple-vforce-batch-sweep-${{ matrix.shard }}
           path: |
             /tmp/build.txt
             /tmp/raw.txt
