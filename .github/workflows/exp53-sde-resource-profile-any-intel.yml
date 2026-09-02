@@ -1,4 +1,4 @@
-name: EXP53 vs Intel SDE resource profile any Intel
+name: EXP53 vs Intel SDE SSC resource profile
 
 on:
   workflow_dispatch:
@@ -59,6 +59,7 @@ jobs:
           echo '94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50  sde.tar.xz' | sha256sum -c -
           tar -xf sde.tar.xz
           SDE="$(find /tmp/sde-kit -maxdepth 2 -type f -name sde64 -print -quit)"; test -x "$SDE"; echo "SDE=$SDE" >> "$GITHUB_ENV"
+          rm -rf /tmp/sde-flops && git clone -q https://github.com/It4innovations/Intel-SDE-FLOPS.git /tmp/sde-flops
       - name: Build harness
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -70,8 +71,8 @@ jobs:
           "$ICPX" -std=c++17 $COMMON -Iproduction -I/home/runner/vcl-exp53 -c production/exp53_vcl_u2z_0100_frozen.cpp -o /tmp/sdeprof/vcl.o
           "$ICX" $COMMON -Iproduction -Dexp53_n2_fused_u4_038_frozen=exp53_n2_fused_u4_038_frozen_ntlocal -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_n2_vmstyle_u4_0381_frozen_ntlocal -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/sdeprof/nt.o
           "$ICPX" -std=c++17 $COMMON -Iproduction -I"$HWY" -I"$MKLROOT/include" bench_exp53_sde_resources.cpp /tmp/sdeprof/vcl.o /tmp/sdeprof/nt.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/sdeprof/bench
-          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=SDE_global_dynamic_counts_single_batch_minus_zero_call_baseline'; } | tee /tmp/sdeprof/meta.txt
-      - name: Profile all batches
+          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=Intel_documented_FACE_DEAD_SSC_region_multithread'; } | tee /tmp/sdeprof/meta.txt
+      - name: Profile all batches inside SSC region
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         env:
@@ -81,15 +82,18 @@ jobs:
           set -euo pipefail
           for n in 100 700 3500 15000 50000 1000000 2000000; do
             for stack in ours intel; do
-              for mode in base work; do
-                [[ "$mode" == base ]] && c=0 || c=1
-                d="/tmp/sdeprof/${stack}-${n}-${mode}"; mkdir -p "$d"
-                echo "PROFILE stack=$stack n=$n mode=$mode calls=$c"
-                (cd "$d"; "$SDE" -mix -omix mix.txt -- /tmp/sdeprof/bench "$stack" "$n" "$c" | tee program.txt)
-              done
+              d="/tmp/sdeprof/${stack}-${n}"; mkdir -p "$d"
+              echo "PROFILE stack=$stack n=$n calls=1"
+              (
+                cd "$d"
+                "$SDE" -iform -mix -dyn_mask_profile \
+                  -start_ssc_mark FACE:repeat -stop_ssc_mark DEAD:repeat \
+                  -omix mix.txt -- /tmp/sdeprof/bench "$stack" "$n" 1 | tee program.txt
+                python3 /tmp/sde-flops/intel_sde_flops.py mix.txt sde-dyn-mask-profile.txt | tee flops.txt
+              )
             done
           done
-      - name: Aggregate differential resource table
+      - name: Aggregate SSC resource table
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
@@ -98,28 +102,31 @@ jobs:
           import pathlib,re
           root=pathlib.Path('/tmp/sdeprof'); print((root/'meta.txt').read_text(),end='')
           sizes=[100,700,3500,15000,50000,1000000,2000000]
-          def parse_global(p):
-              t=p.read_text(errors='replace'); starts=[m.start() for m in re.finditer(r'^# \$global-dynamic-counts\s*$',t,re.M)]
-              if not starts: raise RuntimeError(f'no global dynamic counts in {p}')
-              candidates=[]
-              for s in starts:
-                  nxt=t.find('\n# $',s+5); chunk=t[s:] if nxt<0 else t[s:nxt]; rows={}
-                  for k,v in re.findall(r'^([^#\s][^\s]*)\s+([0-9]+)\s*$',chunk,re.M): rows[k]=int(v)
-                  if '*total' in rows: candidates.append(rows)
-              if not candidates: raise RuntimeError(f'no *total in {p}')
-              r=max(candidates,key=lambda x:x['*total']); fma=sum(v for k,v in r.items() if re.match(r'^VF(?:M|NM)',k))
-              return {'inst':r.get('*total',0),'rd':r.get('*mem-read',0),'wr':r.get('*mem-write',0),'avx512':r.get('*avx512',0),'avx256':r.get('*avx256',0),'avx128':r.get('*avx128',0),'scalar_simd':r.get('*scalar-simd',0),'fma':fma}
-          print('TABLE_HEADER n stack instructions_per_el bytes_read_per_el bytes_written_per_el bytes_total_per_el avx512_inst_per_el avx256_inst_per_el avx128_inst_per_el scalar_simd_inst_per_el fma_inst_per_el')
+          def flops(p):
+              t=p.read_text(errors='replace'); k=t.rfind('Sum:'); t=t[k:] if k>=0 else t
+              def g(label):
+                  m=re.search(re.escape(label)+r'\s*([0-9]+)',t); return int(m.group(1)) if m else None
+              return {'inst':g('Total instructions executed:'),'fma':g('Total FMA instructions executed:'),'dp':g('Double prec. FLOPs:'),'rd':g('Total bytes read:'),'wr':g('Total bytes written:')}
+          def isa(p):
+              t=p.read_text(errors='replace'); totals={'avx512':0,'avx256':0,'avx128':0,'scalar':0}
+              # SDE emits dynamic-count sections per participating thread. Sum each meta category.
+              for sec in re.split(r'# EMIT_DYNAMIC_STATS FOR TID',t)[1:]:
+                  end=sec.find('# END_DYNAMIC_STATS'); sec=sec if end<0 else sec[:end]
+                  for key,outkey in [('*avx512','avx512'),('*avx256','avx256'),('*avx128','avx128'),('*scalar-simd','scalar')]:
+                      m=re.search(r'^'+re.escape(key)+r'\s+([0-9]+)\s*$',sec,re.M)
+                      if m: totals[outkey]+=int(m.group(1))
+              return totals
+          print('TABLE_HEADER n stack instructions_per_el bytes_read_per_el bytes_written_per_el bytes_total_per_el avx512_inst_per_el avx256_inst_per_el avx128_inst_per_el scalar_simd_inst_per_el fma_inst_per_el dp_flops_per_el')
           for n in sizes:
               for stack in ('ours','intel'):
-                  b=parse_global(root/f'{stack}-{n}-base'/'mix.txt'); w=parse_global(root/f'{stack}-{n}-work'/'mix.txt'); d={k:w[k]-b[k] for k in b}
-                  if d['inst']<=0: raise SystemExit(f'bad differential count stack={stack} n={n}: {d}')
-                  q=lambda x:x/n
-                  print(f'SDE_FINAL n={n} stack={stack} instructions_per_el={q(d["inst"]):.9f} bytes_read_per_el={q(d["rd"]):.9f} bytes_written_per_el={q(d["wr"]):.9f} bytes_total_per_el={q(d["rd"]+d["wr"]):.9f} avx512_inst_per_el={q(d["avx512"]):.9f} avx256_inst_per_el={q(d["avx256"]):.9f} avx128_inst_per_el={q(d["avx128"]):.9f} scalar_simd_inst_per_el={q(d["scalar_simd"]):.9f} fma_inst_per_el={q(d["fma"]):.9f}')
+                  d=root/f'{stack}-{n}'; f=flops(d/'flops.txt'); a=isa(d/'mix.txt')
+                  if f['inst'] is None or f['inst']<=0: raise SystemExit(f'bad SSC count stack={stack} n={n}: {f}')
+                  q=lambda x:-1.0 if x is None else x/n
+                  print(f'SDE_FINAL n={n} stack={stack} instructions_per_el={q(f["inst"]):.9f} bytes_read_per_el={q(f["rd"]):.9f} bytes_written_per_el={q(f["wr"]):.9f} bytes_total_per_el={q((f["rd"] or 0)+(f["wr"] or 0)):.9f} avx512_inst_per_el={q(a["avx512"]):.9f} avx256_inst_per_el={q(a["avx256"]):.9f} avx128_inst_per_el={q(a["avx128"]):.9f} scalar_simd_inst_per_el={q(a["scalar"]):.9f} fma_inst_per_el={q(f["fma"]):.9f} dp_flops_per_el={q(f["dp"]):.9f}')
           PY
       - name: Upload
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/upload-artifact@v4
         with:
-          name: exp53-sde-any-intel-${{ matrix.shard }}
+          name: exp53-sde-ssc-${{ matrix.shard }}
           path: /tmp/sdeprof
