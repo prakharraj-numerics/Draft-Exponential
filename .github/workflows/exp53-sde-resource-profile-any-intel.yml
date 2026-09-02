@@ -99,7 +99,7 @@ jobs:
             calls="$(calls_for "$n")"
             for stack in ours intel; do
               d="/tmp/sdeprof/${stack}-${n}"; mkdir -p "$d"
-              (cd "$d"; "$SDE" -mix -iform -dyn_mask_profile -footprint -global_region -start_ssc_mark FACE:repeat -stop_ssc_mark DEAD:repeat -mix_omit_per_function_stats 1 -mix_omit_per_thread_stats 1 -global_functions 0 -top_blocks 0 -omix mix.txt -ofootprint footprint.txt -- /tmp/sdeprof/bench "$stack" "$n" "$calls" | tee program.txt; python3 /tmp/sde-flops/intel_sde_flops.py mix.txt sde-dyn-mask-profile.txt | tee flops.txt)
+              (cd "$d"; "$SDE" -mix -iform -dyn_mask_profile -footprint -global_region -start_ssc_mark FACE:repeat -stop_ssc_mark DEAD:repeat -top_blocks 0 -omix mix.txt -ofootprint footprint.txt -- /tmp/sdeprof/bench "$stack" "$n" "$calls" | tee program.txt; python3 /tmp/sde-flops/intel_sde_flops.py mix.txt sde-dyn-mask-profile.txt | tee flops.txt)
             done
           done
       - name: Aggregate
