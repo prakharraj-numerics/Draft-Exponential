@@ -23,12 +23,7 @@ jobs:
           MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
           VENDOR="$(lscpu | awk -F: '/Vendor ID/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
           echo "CPU_MODEL=$MODEL VENDOR=$VENDOR"
-          if [[ "$VENDOR" == GenuineIntel ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
-            echo eligible=1 >> "$GITHUB_OUTPUT"
-          else
-            echo eligible=0 >> "$GITHUB_OUTPUT"
-            echo SKIP_NON_INTEL_AVX512
-          fi
+          if [[ "$VENDOR" == GenuineIntel ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_INTEL_AVX512; fi
       - name: Restore oneAPI
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/cache@v4
@@ -41,16 +36,12 @@ jobs:
         with:
           path: /home/runner/vcl-exp53
           key: exp53-vcl-dc6cb6cea60bb983314c33386f5f4a7fae5b7efb-v1
-      - name: Ensure pinned VCL
+      - name: Ensure VCL
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -f /home/runner/vcl-exp53/vectorclass.h ]]; then
-            rm -rf /home/runner/vcl-exp53
-            git clone -q https://github.com/vectorclass/version2.git /home/runner/vcl-exp53
-            git -C /home/runner/vcl-exp53 checkout -q dc6cb6cea60bb983314c33386f5f4a7fae5b7efb
-          fi
+          if [[ ! -f /home/runner/vcl-exp53/vectorclass.h ]]; then rm -rf /home/runner/vcl-exp53; git clone -q https://github.com/vectorclass/version2.git /home/runner/vcl-exp53; git -C /home/runner/vcl-exp53 checkout -q dc6cb6cea60bb983314c33386f5f4a7fae5b7efb; fi
       - name: Restore Highway
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/cache/restore@v4
@@ -67,11 +58,7 @@ jobs:
           curl -fsSL -o sde.tar.xz https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
           echo '94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50  sde.tar.xz' | sha256sum -c -
           tar -xf sde.tar.xz
-          SDE="$(find /tmp/sde-kit -maxdepth 2 -type f -name sde64 -print -quit)"
-          test -x "$SDE"
-          echo "SDE=$SDE" >> "$GITHUB_ENV"
-          rm -rf /tmp/sde-flops
-          git clone -q https://github.com/It4innovations/Intel-SDE-FLOPS.git /tmp/sde-flops
+          SDE="$(find /tmp/sde-kit -maxdepth 2 -type f -name sde64 -print -quit)"; test -x "$SDE"; echo "SDE=$SDE" >> "$GITHUB_ENV"
       - name: Build harness
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -83,10 +70,7 @@ jobs:
           "$ICPX" -std=c++17 $COMMON -Iproduction -I/home/runner/vcl-exp53 -c production/exp53_vcl_u2z_0100_frozen.cpp -o /tmp/sdeprof/vcl.o
           "$ICX" $COMMON -Iproduction -Dexp53_n2_fused_u4_038_frozen=exp53_n2_fused_u4_038_frozen_ntlocal -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_n2_vmstyle_u4_0381_frozen_ntlocal -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/sdeprof/nt.o
           "$ICPX" -std=c++17 $COMMON -Iproduction -I"$HWY" -I"$MKLROOT/include" bench_exp53_sde_resources.cpp /tmp/sdeprof/vcl.o /tmp/sdeprof/nt.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/sdeprof/bench
-          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')" | tee /tmp/sdeprof/meta.txt
-          echo "HEAD=$(git rev-parse HEAD)" | tee -a /tmp/sdeprof/meta.txt
-          echo "SDE_VERSION=10.13.1" | tee -a /tmp/sdeprof/meta.txt
-          echo "METHOD=full_program_dynamic_counts_minus_zero_measured_call_baseline" | tee -a /tmp/sdeprof/meta.txt
+          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=SDE_global_dynamic_counts_work_minus_zero_call_baseline'; } | tee /tmp/sdeprof/meta.txt
       - name: Profile all batches
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -100,14 +84,10 @@ jobs:
             calls="$(calls_for "$n")"
             for stack in ours intel; do
               for mode in base work; do
-                if [[ "$mode" == base ]]; then c=0; else c="$calls"; fi
+                [[ "$mode" == base ]] && c=0 || c="$calls"
                 d="/tmp/sdeprof/${stack}-${n}-${mode}"; mkdir -p "$d"
                 echo "PROFILE stack=$stack n=$n mode=$mode calls=$c"
-                (
-                  cd "$d"
-                  "$SDE" -mix -iform -dyn_mask_profile -top_blocks 0 -omix mix.txt -- /tmp/sdeprof/bench "$stack" "$n" "$c" | tee program.txt
-                  python3 /tmp/sde-flops/intel_sde_flops.py mix.txt sde-dyn-mask-profile.txt | tee flops.txt
-                )
+                (cd "$d"; "$SDE" -mix -iform -omix mix.txt -- /tmp/sdeprof/bench "$stack" "$n" "$c" | tee program.txt)
               done
             done
           done
@@ -119,46 +99,32 @@ jobs:
           python3 - <<'PY' | tee /tmp/sdeprof/results.txt
           import pathlib,re
           root=pathlib.Path('/tmp/sdeprof'); print((root/'meta.txt').read_text(),end='')
-          sizes=[100,700,3500,15000,50000,1000000,2000000]
-          calls={100:500,700:100,3500:20,15000:5,50000:2,1000000:1,2000000:1}
-          def fparse(p):
-            t=p.read_text(errors='replace'); k=t.rfind('Sum:'); t=t[k:] if k>=0 else t
-            def g(*labels):
-              for s in labels:
-                m=re.search(re.escape(s)+r'\s*([0-9]+)',t)
-                if m: return int(m.group(1))
-              return None
-            return {
-              'inst':g('Total instructions executed:'),
-              'fma':g('Total FMA instructions executed:'),
-              'dp':g('Double prec. FLOPs:','Double precision FLOPs:'),
-              'rd':g('Total bytes read:'),
-              'wr':g('Total bytes written:'),
-            }
-          def iparse(p):
-            t=p.read_text(errors='replace')
-            d={}
-            for a,b in re.findall(r'^\*isa-ext-([^\s]+)\s+([0-9]+)\s*$',t,re.M):
-              d[a]=d.get(a,0)+int(b)
-            return {
-              'avx512':sum(v for k,v in d.items() if 'AVX512' in k.upper()),
-              'avx':sum(v for k,v in d.items() if 'AVX' in k.upper()),
-            }
-          print('TABLE_HEADER n stack elements instructions_per_el fma_inst_per_el dp_flops_per_el bytes_read_per_el bytes_written_per_el bytes_total_per_el avx512_inst_per_el avx_family_inst_per_el')
+          sizes=[100,700,3500,15000,50000,1000000,2000000]; calls={100:500,700:100,3500:20,15000:5,50000:2,1000000:1,2000000:1}
+          def parse_global(p):
+              t=p.read_text(errors='replace')
+              starts=[m.start() for m in re.finditer(r'^# \$global-dynamic-counts\s*$',t,re.M)]
+              if not starts: raise RuntimeError(f'no global dynamic counts in {p}')
+              # Pick the global histogram having the largest *total; this is the full-run dynamic histogram.
+              candidates=[]
+              for s in starts:
+                  nxt=t.find('\n# $',s+5); chunk=t[s:] if nxt<0 else t[s:nxt]
+                  rows={}
+                  for k,v in re.findall(r'^([^#\s][^\s]*)\s+([0-9]+)\s*$',chunk,re.M): rows[k]=int(v)
+                  if '*total' in rows: candidates.append(rows)
+              if not candidates: raise RuntimeError(f'no *total in global histograms {p}')
+              r=max(candidates,key=lambda x:x['*total'])
+              fma=sum(v for k,v in r.items() if re.match(r'^VF(?:M|NM)',k))
+              return {'inst':r.get('*total',0),'rd':r.get('*mem-read',0),'wr':r.get('*mem-write',0),
+                      'avx512':r.get('*avx512',0),'avx256':r.get('*avx256',0),'avx128':r.get('*avx128',0),
+                      'scalar_simd':r.get('*scalar-simd',0),'fma':fma}
+          print('TABLE_HEADER n stack elements instructions_per_el bytes_read_per_el bytes_written_per_el bytes_total_per_el avx512_inst_per_el avx256_inst_per_el avx128_inst_per_el scalar_simd_inst_per_el fma_inst_per_el')
           for n in sizes:
-            for stack in ('ours','intel'):
-              b=fparse(root/f'{stack}-{n}-base'/'flops.txt'); w=fparse(root/f'{stack}-{n}-work'/'flops.txt')
-              bi=iparse(root/f'{stack}-{n}-base'/'mix.txt'); wi=iparse(root/f'{stack}-{n}-work'/'mix.txt')
-              e=n*calls[n]
-              vals={k:(w[k]-b[k]) if (w[k] is not None and b[k] is not None) else None for k in b}
-              vals['avx512']=wi['avx512']-bi['avx512']; vals['avx']=wi['avx']-bi['avx']
-              if vals['inst'] is None or vals['inst'] <= 0: raise SystemExit(f'bad differential instruction count stack={stack} n={n}: {vals}')
-              q=lambda x:-1.0 if x is None else x/e
-              print(f'SDE_FINAL n={n} stack={stack} elements={e} instructions_per_el={q(vals["inst"]):.9f} '
-                    f'fma_inst_per_el={q(vals["fma"]):.9f} dp_flops_per_el={q(vals["dp"]):.9f} '
-                    f'bytes_read_per_el={q(vals["rd"]):.9f} bytes_written_per_el={q(vals["wr"]):.9f} '
-                    f'bytes_total_per_el={q((vals["rd"] or 0)+(vals["wr"] or 0)):.9f} '
-                    f'avx512_inst_per_el={q(vals["avx512"]):.9f} avx_family_inst_per_el={q(vals["avx"]):.9f}')
+              for stack in ('ours','intel'):
+                  b=parse_global(root/f'{stack}-{n}-base'/'mix.txt'); w=parse_global(root/f'{stack}-{n}-work'/'mix.txt'); e=n*calls[n]
+                  d={k:w[k]-b[k] for k in b}
+                  if d['inst']<=0: raise SystemExit(f'bad differential count stack={stack} n={n}: {d}')
+                  q=lambda x:x/e
+                  print(f'SDE_FINAL n={n} stack={stack} elements={e} instructions_per_el={q(d["inst"]):.9f} bytes_read_per_el={q(d["rd"]):.9f} bytes_written_per_el={q(d["wr"]):.9f} bytes_total_per_el={q(d["rd"]+d["wr"]):.9f} avx512_inst_per_el={q(d["avx512"]):.9f} avx256_inst_per_el={q(d["avx256"]):.9f} avx128_inst_per_el={q(d["avx128"]):.9f} scalar_simd_inst_per_el={q(d["scalar_simd"]):.9f} fma_inst_per_el={q(d["fma"]):.9f}')
           PY
       - name: Upload
         if: steps.cpu.outputs.eligible == '1'
