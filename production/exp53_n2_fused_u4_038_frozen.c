@@ -9,10 +9,14 @@
    ER-low repair retained. TAB128[j] and 2^q are fused exactly by adding q
    directly to the gathered IEEE-754 exponent bits (valid for the benchmarked
    production domain [-100,100], where the resulting scale stays normal).
+
+   PRINCIPLE FIX (2026-09-02): the historical scalar libm exp() remainder has
+   been removed. Every output, including the final 1..31 elements, is now
+   produced by this same EXP53 reduction/Q4/ER-low/table machinery using a
+   masked AVX-512 tail. No external exponential implementation is used.
    This file intentionally has NO project-local #include dependencies.
 */
 #include <immintrin.h>
-#include <math.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -115,5 +119,37 @@ void exp53_n2_fused_u4_038_frozen(double *restrict out,
             _mm512_storeu_pd(out+i+8*L,y[L]);
         }
     }
-    for(;i<n;i++) out[i]=exp(in[i]);
+
+    /* Formula-only AVX-512 remainder: no libm exp() fallback. */
+    for(; i<n; i+=8){
+        const size_t rem=n-i;
+        const unsigned lanes=(unsigned)(rem<8?rem:8);
+        const __mmask8 active=(__mmask8)((1u<<lanes)-1u);
+
+        const __m512d x=_mm512_maskz_loadu_pd(active,in+i);
+        const __m512d biased=_mm512_fmadd_pd(x,inv,magic);
+        const __m512d k=_mm512_sub_pd(biased,magic);
+        const __m512i kn=_mm512_sub_epi64(_mm512_castpd_si512(biased),mb);
+        const __m512i j=_mm512_and_epi64(kn,mask);
+        const __m512i q=_mm512_srai_epi64(kn,7);
+
+        __m512d r=_mm512_fnmadd_pd(k,hi,x);
+        r=_mm512_fnmadd_pd(k,mi,r);
+        r=_mm512_fnmadd_pd(k,lo,r);
+
+        const __m512i tb=_mm512_i64gather_epi64(j,(const long long*)N2_FROZEN_TAB128,8);
+        const __m512i sb=_mm512_add_epi64(tb,_mm512_slli_epi64(q,52));
+        const __m512d scale=_mm512_castsi512_pd(sb);
+
+        __m512d h=_mm512_fmadd_pd(nq4,r,nq3);
+        h=_mm512_fmadd_pd(h,r,nq2);
+        h=_mm512_fmadd_pd(h,r,nq1);
+        h=_mm512_fmadd_pd(h,r,one);
+        const __m512d s=_mm512_mul_pd(h,h);
+        const __m512d er=_mm512_fmadd_pd(r,s,one);
+        const __m512d el=_mm512_fmadd_pd(r,s,_mm512_sub_pd(one,er));
+        const __m512d ph=_mm512_mul_pd(er,scale);
+        const __m512d y=_mm512_fmadd_pd(el,scale,ph);
+        _mm512_mask_storeu_pd(out+i,active,y);
+    }
 }
