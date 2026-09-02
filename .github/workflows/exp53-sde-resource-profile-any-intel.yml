@@ -73,7 +73,7 @@ jobs:
           "$ICX" $COMMON -Iproduction -Dexp53_n2_fused_u4_038_frozen=exp53_n2_fused_u4_038_frozen_ntlocal -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_n2_vmstyle_u4_0381_frozen_ntlocal -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/sdeprof/nt.o
           "$ICPX" -std=c++17 $COMMON -Iproduction -I"$HWY" -I"$MKLROOT/include" bench_exp53_sde_resources.cpp /tmp/sdeprof/vcl.o /tmp/sdeprof/nt.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/sdeprof/bench
           nm -n /tmp/sdeprof/bench | grep -E ' exp53_profile_(start|stop)$'
-          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=Intel_documented_address_alarm_broadcast_region'; } | tee /tmp/sdeprof/meta.txt
+          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=Intel_address_alarm_global_region'; } | tee /tmp/sdeprof/meta.txt
       - name: Profile all batches inside address region
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -89,7 +89,7 @@ jobs:
               (
                 cd "$d"
                 "$SDE" -mix -iform -dyn_mask_profile -global_region \
-                  -control 'start:address:exp53_profile_start,bcast,stop:address:exp53_profile_stop,bcast' \
+                  -control 'start:address:exp53_profile_start,stop:address:exp53_profile_stop' \
                   -omix mix.txt -- /tmp/sdeprof/bench "$stack" "$n" 1 | tee program.txt
                 python3 /tmp/sde-flops/intel_sde_flops.py mix.txt sde-dyn-mask-profile.txt | tee flops.txt || true
                 grep -E '^\*total[[:space:]]+[1-9][0-9]*' mix.txt | tail -1
