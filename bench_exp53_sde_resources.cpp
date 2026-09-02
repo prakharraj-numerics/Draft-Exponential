@@ -58,18 +58,13 @@ static uint64_t cross_check(const double* got, const double* ref, size_t n) {
     return maxulp;
 }
 
-// Deliberately exported, unmangled and non-inlined so Intel SDE can use its
-// documented enter_func/exit_func controller.  This function contains only
-// the EXP calls to be counted; setup, validation and output stay outside.
-extern "C" __attribute__((noinline, used))
-void exp53_profile_region(Exp53BatchProductionExecutor* executor,
-                          double* out, const double* in,
-                          size_t n, size_t calls, int ours) {
+// Separate exported symbols are used as Intel SDE address alarms.  The region
+// between them contains only the requested EXP calls.  The memory clobber keeps
+// the compiler from moving the calls across either marker.
+extern "C" __attribute__((noinline, used)) void exp53_profile_start() {
     asm volatile("" ::: "memory");
-    for (size_t k = 0; k < calls; ++k) {
-        if (ours) executor->run(out, in, n, 2);
-        else vmdExp(static_cast<MKL_INT>(n), in, out, VML_HA);
-    }
+}
+extern "C" __attribute__((noinline, used)) void exp53_profile_stop() {
     asm volatile("" ::: "memory");
 }
 
@@ -90,20 +85,21 @@ int main(int argc, char** argv) {
     vmdExp(static_cast<MKL_INT>(n), in.p, ref.p, VML_HA);
 
     Exp53BatchProductionExecutor executor(2);
-    auto warm = [&] {
+    auto invoke = [&] {
         if (stack == "ours") executor.run(out.p, in.p, n, 2);
         else vmdExp(static_cast<MKL_INT>(n), in.p, out.p, VML_HA);
     };
 
-    // Warm lazy dispatch and helper-worker paths before the SDE-controlled region.
-    for (int i = 0; i < 4; ++i) warm();
+    for (int i = 0; i < 4; ++i) invoke();
     const uint64_t maxulp = cross_check(out.p, ref.p, n);
     if (maxulp > 2) {
         std::cerr << "correctness failure maxulp=" << maxulp << "\n";
         return 4;
     }
 
-    exp53_profile_region(&executor, out.p, in.p, n, calls, stack == "ours");
+    exp53_profile_start();
+    for (size_t k = 0; k < calls; ++k) invoke();
+    exp53_profile_stop();
 
     volatile double sink = out.p[(n * 17ULL + calls) % n];
     std::cout << "SDE_RUN stack=" << stack << " n=" << n << " calls=" << calls
