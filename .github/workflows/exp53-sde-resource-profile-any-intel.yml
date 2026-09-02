@@ -70,7 +70,7 @@ jobs:
           "$ICPX" -std=c++17 $COMMON -Iproduction -I/home/runner/vcl-exp53 -c production/exp53_vcl_u2z_0100_frozen.cpp -o /tmp/sdeprof/vcl.o
           "$ICX" $COMMON -Iproduction -Dexp53_n2_fused_u4_038_frozen=exp53_n2_fused_u4_038_frozen_ntlocal -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_n2_vmstyle_u4_0381_frozen_ntlocal -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/sdeprof/nt.o
           "$ICPX" -std=c++17 $COMMON -Iproduction -I"$HWY" -I"$MKLROOT/include" bench_exp53_sde_resources.cpp /tmp/sdeprof/vcl.o /tmp/sdeprof/nt.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/sdeprof/bench
-          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=SDE_global_dynamic_counts_work_minus_zero_call_baseline'; } | tee /tmp/sdeprof/meta.txt
+          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=SDE_global_dynamic_counts_single_batch_minus_zero_call_baseline'; } | tee /tmp/sdeprof/meta.txt
       - name: Profile all batches
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -79,15 +79,13 @@ jobs:
           OMP_NUM_THREADS: '1'
         run: |
           set -euo pipefail
-          calls_for(){ case "$1" in 100) echo 500;; 700) echo 100;; 3500) echo 20;; 15000) echo 5;; 50000) echo 2;; 1000000|2000000) echo 1;; esac; }
           for n in 100 700 3500 15000 50000 1000000 2000000; do
-            calls="$(calls_for "$n")"
             for stack in ours intel; do
               for mode in base work; do
-                [[ "$mode" == base ]] && c=0 || c="$calls"
+                [[ "$mode" == base ]] && c=0 || c=1
                 d="/tmp/sdeprof/${stack}-${n}-${mode}"; mkdir -p "$d"
                 echo "PROFILE stack=$stack n=$n mode=$mode calls=$c"
-                (cd "$d"; "$SDE" -mix -iform -omix mix.txt -- /tmp/sdeprof/bench "$stack" "$n" "$c" | tee program.txt)
+                (cd "$d"; "$SDE" -mix -omix mix.txt -- /tmp/sdeprof/bench "$stack" "$n" "$c" | tee program.txt)
               done
             done
           done
@@ -99,32 +97,25 @@ jobs:
           python3 - <<'PY' | tee /tmp/sdeprof/results.txt
           import pathlib,re
           root=pathlib.Path('/tmp/sdeprof'); print((root/'meta.txt').read_text(),end='')
-          sizes=[100,700,3500,15000,50000,1000000,2000000]; calls={100:500,700:100,3500:20,15000:5,50000:2,1000000:1,2000000:1}
+          sizes=[100,700,3500,15000,50000,1000000,2000000]
           def parse_global(p):
-              t=p.read_text(errors='replace')
-              starts=[m.start() for m in re.finditer(r'^# \$global-dynamic-counts\s*$',t,re.M)]
+              t=p.read_text(errors='replace'); starts=[m.start() for m in re.finditer(r'^# \$global-dynamic-counts\s*$',t,re.M)]
               if not starts: raise RuntimeError(f'no global dynamic counts in {p}')
-              # Pick the global histogram having the largest *total; this is the full-run dynamic histogram.
               candidates=[]
               for s in starts:
-                  nxt=t.find('\n# $',s+5); chunk=t[s:] if nxt<0 else t[s:nxt]
-                  rows={}
+                  nxt=t.find('\n# $',s+5); chunk=t[s:] if nxt<0 else t[s:nxt]; rows={}
                   for k,v in re.findall(r'^([^#\s][^\s]*)\s+([0-9]+)\s*$',chunk,re.M): rows[k]=int(v)
                   if '*total' in rows: candidates.append(rows)
-              if not candidates: raise RuntimeError(f'no *total in global histograms {p}')
-              r=max(candidates,key=lambda x:x['*total'])
-              fma=sum(v for k,v in r.items() if re.match(r'^VF(?:M|NM)',k))
-              return {'inst':r.get('*total',0),'rd':r.get('*mem-read',0),'wr':r.get('*mem-write',0),
-                      'avx512':r.get('*avx512',0),'avx256':r.get('*avx256',0),'avx128':r.get('*avx128',0),
-                      'scalar_simd':r.get('*scalar-simd',0),'fma':fma}
-          print('TABLE_HEADER n stack elements instructions_per_el bytes_read_per_el bytes_written_per_el bytes_total_per_el avx512_inst_per_el avx256_inst_per_el avx128_inst_per_el scalar_simd_inst_per_el fma_inst_per_el')
+              if not candidates: raise RuntimeError(f'no *total in {p}')
+              r=max(candidates,key=lambda x:x['*total']); fma=sum(v for k,v in r.items() if re.match(r'^VF(?:M|NM)',k))
+              return {'inst':r.get('*total',0),'rd':r.get('*mem-read',0),'wr':r.get('*mem-write',0),'avx512':r.get('*avx512',0),'avx256':r.get('*avx256',0),'avx128':r.get('*avx128',0),'scalar_simd':r.get('*scalar-simd',0),'fma':fma}
+          print('TABLE_HEADER n stack instructions_per_el bytes_read_per_el bytes_written_per_el bytes_total_per_el avx512_inst_per_el avx256_inst_per_el avx128_inst_per_el scalar_simd_inst_per_el fma_inst_per_el')
           for n in sizes:
               for stack in ('ours','intel'):
-                  b=parse_global(root/f'{stack}-{n}-base'/'mix.txt'); w=parse_global(root/f'{stack}-{n}-work'/'mix.txt'); e=n*calls[n]
-                  d={k:w[k]-b[k] for k in b}
+                  b=parse_global(root/f'{stack}-{n}-base'/'mix.txt'); w=parse_global(root/f'{stack}-{n}-work'/'mix.txt'); d={k:w[k]-b[k] for k in b}
                   if d['inst']<=0: raise SystemExit(f'bad differential count stack={stack} n={n}: {d}')
-                  q=lambda x:x/e
-                  print(f'SDE_FINAL n={n} stack={stack} elements={e} instructions_per_el={q(d["inst"]):.9f} bytes_read_per_el={q(d["rd"]):.9f} bytes_written_per_el={q(d["wr"]):.9f} bytes_total_per_el={q(d["rd"]+d["wr"]):.9f} avx512_inst_per_el={q(d["avx512"]):.9f} avx256_inst_per_el={q(d["avx256"]):.9f} avx128_inst_per_el={q(d["avx128"]):.9f} scalar_simd_inst_per_el={q(d["scalar_simd"]):.9f} fma_inst_per_el={q(d["fma"]):.9f}')
+                  q=lambda x:x/n
+                  print(f'SDE_FINAL n={n} stack={stack} instructions_per_el={q(d["inst"]):.9f} bytes_read_per_el={q(d["rd"]):.9f} bytes_written_per_el={q(d["wr"]):.9f} bytes_total_per_el={q(d["rd"]+d["wr"]):.9f} avx512_inst_per_el={q(d["avx512"]):.9f} avx256_inst_per_el={q(d["avx256"]):.9f} avx128_inst_per_el={q(d["avx128"]):.9f} scalar_simd_inst_per_el={q(d["scalar_simd"]):.9f} fma_inst_per_el={q(d["fma"]):.9f}')
           PY
       - name: Upload
         if: steps.cpu.outputs.eligible == '1'
