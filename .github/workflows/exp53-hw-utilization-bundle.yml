@@ -1,0 +1,161 @@
+name: EXP53 vs Intel hardware utilization bundle
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'bench_exp53_hw_utilization_bundle.cpp'
+      - '.github/workflows/exp53-hw-utilization-bundle.yml'
+
+jobs:
+  bench:
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Enable and probe PMU
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -x
+          echo "paranoid_before=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || true)"
+          sudo sysctl -w kernel.perf_event_paranoid=-1 || true
+          echo "paranoid_after=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || true)"
+          if command -v perf >/dev/null; then
+            perf stat -e cycles,instructions,cache-references,cache-misses,branches,branch-misses -- true || true
+            perf list --no-desc 2>/dev/null | grep -Ei 'fp_arith_inst_retired|uncore_imc|cas_count|stalled-cycles' | head -120 || true
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Restore VCL
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/vcl-exp53
+          key: exp53-vcl-dc6cb6cea60bb983314c33386f5f4a7fae5b7efb-v1
+
+      - name: Ensure pinned VCL
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f /home/runner/vcl-exp53/vectorclass.h ]]; then
+            rm -rf /home/runner/vcl-exp53
+            git clone -q https://github.com/vectorclass/version2.git /home/runner/vcl-exp53
+            git -C /home/runner/vcl-exp53 checkout -q dc6cb6cea60bb983314c33386f5f4a7fae5b7efb
+          fi
+
+      - name: Restore Highway
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/exp53-component-deps
+          key: exp53-component-deps-ubuntu24-x86_64-xnn-b9b1cec0-v1
+          fail-on-cache-miss: true
+
+      - name: Build hardware utilization benchmark
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/hw
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          HWY=/home/runner/exp53-component-deps/highway
+          "$ICPX" -std=c++17 $COMMON -Iproduction -I/home/runner/vcl-exp53 \
+            -c production/exp53_vcl_u2z_0100_frozen.cpp -o /tmp/hw/vcl.o
+          "$ICX" $COMMON -Iproduction \
+            -Dexp53_n2_fused_u4_038_frozen=exp53_n2_fused_u4_038_frozen_ntlocal \
+            -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_n2_vmstyle_u4_0381_frozen_ntlocal \
+            -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/hw/nt.o
+          "$ICPX" -std=c++17 $COMMON -Iproduction -I"$HWY" -I"$MKLROOT/include" \
+            bench_exp53_hw_utilization_bundle.cpp /tmp/hw/vcl.o /tmp/hw/nt.o \
+            -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed \
+            -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl \
+            -o /tmp/hw/bench
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "PRODUCTION_BLOB=$(git hash-object production/exp53_batch_production.hpp)"
+            echo "SIZES=100,700,3500,15000,50000,1000000,2000000"
+            echo "COUNTERS=cycles,instructions,IPC,cache_refs,cache_misses,branches,branch_misses,frontend_stalls,backend_stalls,FP512"
+            echo "MEMORY_BYTES=attempted_by_platform_probe_only;not_substituted"
+            echo "ENERGY=attempted_by_platform_probe_only;not_substituted"
+          } | tee /tmp/hw/build.txt
+
+      - name: Measure all batches
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          RAW=/tmp/hw/raw.txt
+          : > "$RAW"
+          for n in 100 700 3500 15000 50000 1000000 2000000; do
+            taskset -c 0,2 /tmp/hw/bench ours "$n" | tee -a "$RAW"
+            taskset -c 0 /tmp/hw/bench intel "$n" | tee -a "$RAW"
+          done
+
+      - name: Aggregate utilization bundle
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          cat /tmp/hw/build.txt > /tmp/hw/results.txt
+          python3 - <<'PY' | tee -a /tmp/hw/results.txt
+          import re
+          rows={}
+          pat=re.compile(r'HWRESULT stack=(ours|intel) n=(\d+) calls=(\d+) wall_ns_per_element=([-0-9.]+) cycles_per_element=([-0-9.]+) instructions_per_element=([-0-9.]+) ipc=([-0-9.]+) cache_references_per_element=([-0-9.]+) cache_misses_per_element=([-0-9.]+) cache_miss_rate=([-0-9.]+) branches_per_element=([-0-9.]+) branch_misses_per_element=([-0-9.]+) branch_miss_rate=([-0-9.]+) stalled_frontend_cycles_per_element=([-0-9.]+) stalled_backend_cycles_per_element=([-0-9.]+) fp512_inst_per_element=([-0-9.]+) fp512_double_lanes_per_element=([-0-9.]+) memory_bytes_per_element=([-0-9.]+) joules_per_element=([-0-9.]+) maxulp=(\d+)')
+          for line in open('/tmp/hw/raw.txt'):
+              m=pat.search(line)
+              if m:
+                  vals=list(map(float,m.groups()[3:-1]))
+                  rows[(m.group(1),int(m.group(2)))]=(int(m.group(3)),vals,int(m.group(18)))
+          names=['wall','cycles','instructions','ipc','cache_refs','cache_misses','cache_miss_rate','branches','branch_misses','branch_miss_rate','frontend_stall','backend_stall','fp512_inst','fp512_lanes','memory_bytes','joules']
+          for n in [100,700,3500,15000,50000,1000000,2000000]:
+              for s in ['ours','intel']:
+                  if (s,n) not in rows: raise SystemExit(f'missing {(s,n)}')
+                  calls,vals,ulp=rows[(s,n)]
+                  d=dict(zip(names,vals))
+                  print('ROW', 'stack='+s, 'n='+str(n), *[f'{k}={v:.9f}' for k,v in d.items()], 'maxulp='+str(ulp))
+              _,ov,_=rows[('ours',n)]; _,iv,_=rows[('intel',n)]
+              o=dict(zip(names,ov)); i=dict(zip(names,iv))
+              def ratio(k):
+                  return i[k]/o[k] if o[k]>0 and i[k]>=0 else -1.0
+              print(f'COMPARE n={n} speedup={ratio("wall"):.6f} cycles_eff_ratio={ratio("cycles"):.6f} instructions_eff_ratio={ratio("instructions"):.6f} cache_miss_eff_ratio={ratio("cache_misses"):.6f} branch_miss_eff_ratio={ratio("branch_misses"):.6f}')
+          PY
+          cat /tmp/hw/raw.txt >> /tmp/hw/results.txt
+
+      - name: Upload hardware utilization result
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-hw-utilization-${{ matrix.shard }}
+          path: /tmp/hw
