@@ -31,16 +31,19 @@ jobs:
             echo SKIP_NON_6973PC
           fi
 
-      - name: Restore dependencies
+      - name: Restore oneAPI
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/cache@v4
         with:
-          path: |
-            /opt/intel/oneapi
-            /home/runner/vcl-exp53
-          key: exp53-efficiency-oneapi-vcl-v1
-          restore-keys: |
-            intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Restore VCL
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/vcl-exp53
+          key: exp53-vcl-dc6cb6cea60bb983314c33386f5f4a7fae5b7efb-v1
 
       - name: Ensure pinned VCL
         if: steps.cpu.outputs.eligible == '1'
