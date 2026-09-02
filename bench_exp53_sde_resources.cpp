@@ -9,13 +9,6 @@
 #include <mkl_vml.h>
 #include "production/exp53_batch_production.hpp"
 
-// Force the exact raw SSC encoding documented by Intel-SDE-FLOPS even under icpx.
-#ifdef __SSC_MARK
-#undef __SSC_MARK
-#endif
-#define __SSC_MARK(tag) \
-    __asm__ __volatile__("movl %0, %%ebx; .byte 0x64, 0x67, 0x90 " :: "i"(tag) : "%ebx")
-
 struct Aligned {
     double* p = nullptr;
     explicit Aligned(size_t n) {
@@ -65,6 +58,21 @@ static uint64_t cross_check(const double* got, const double* ref, size_t n) {
     return maxulp;
 }
 
+// Deliberately exported, unmangled and non-inlined so Intel SDE can use its
+// documented enter_func/exit_func controller.  This function contains only
+// the EXP calls to be counted; setup, validation and output stay outside.
+extern "C" __attribute__((noinline, used))
+void exp53_profile_region(Exp53BatchProductionExecutor* executor,
+                          double* out, const double* in,
+                          size_t n, size_t calls, int ours) {
+    asm volatile("" ::: "memory");
+    for (size_t k = 0; k < calls; ++k) {
+        if (ours) executor->run(out, in, n, 2);
+        else vmdExp(static_cast<MKL_INT>(n), in, out, VML_HA);
+    }
+    asm volatile("" ::: "memory");
+}
+
 int main(int argc, char** argv) {
     if (argc != 4) {
         std::cerr << "usage: " << argv[0] << " ours|intel N CALLS\n";
@@ -82,22 +90,20 @@ int main(int argc, char** argv) {
     vmdExp(static_cast<MKL_INT>(n), in.p, ref.p, VML_HA);
 
     Exp53BatchProductionExecutor executor(2);
-    auto invoke = [&] {
+    auto warm = [&] {
         if (stack == "ours") executor.run(out.p, in.p, n, 2);
         else vmdExp(static_cast<MKL_INT>(n), in.p, out.p, VML_HA);
     };
 
-    // Warm all lazy dispatch / worker paths outside the SDE region.
-    for (int i = 0; i < 4; ++i) invoke();
+    // Warm lazy dispatch and helper-worker paths before the SDE-controlled region.
+    for (int i = 0; i < 4; ++i) warm();
     const uint64_t maxulp = cross_check(out.p, ref.p, n);
     if (maxulp > 2) {
         std::cerr << "correctness failure maxulp=" << maxulp << "\n";
         return 4;
     }
 
-    __SSC_MARK(0xFACE);
-    for (size_t k = 0; k < calls; ++k) invoke();
-    __SSC_MARK(0xDEAD);
+    exp53_profile_region(&executor, out.p, in.p, n, calls, stack == "ours");
 
     volatile double sink = out.p[(n * 17ULL + calls) % n];
     std::cout << "SDE_RUN stack=" << stack << " n=" << n << " calls=" << calls
