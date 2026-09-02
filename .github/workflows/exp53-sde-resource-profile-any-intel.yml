@@ -1,4 +1,4 @@
-name: EXP53 vs Intel SDE address resource profile
+name: EXP53 vs Intel SDE resource bundle
 
 on:
   workflow_dispatch:
@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
       - name: Require Intel AVX512
         id: cpu
         shell: bash
@@ -24,25 +25,38 @@ jobs:
           MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
           VENDOR="$(lscpu | awk -F: '/Vendor ID/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
           echo "CPU_MODEL=$MODEL VENDOR=$VENDOR"
-          if [[ "$VENDOR" == GenuineIntel ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; echo SKIP_NON_INTEL_AVX512; fi
+          if [[ "$VENDOR" == GenuineIntel ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_INTEL_AVX512
+          fi
+
       - name: Restore oneAPI
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/cache@v4
         with:
           path: /opt/intel/oneapi
           key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
       - name: Restore VCL
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/cache@v4
         with:
           path: /home/runner/vcl-exp53
           key: exp53-vcl-dc6cb6cea60bb983314c33386f5f4a7fae5b7efb-v1
+
       - name: Ensure VCL
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -f /home/runner/vcl-exp53/vectorclass.h ]]; then rm -rf /home/runner/vcl-exp53; git clone -q https://github.com/vectorclass/version2.git /home/runner/vcl-exp53; git -C /home/runner/vcl-exp53 checkout -q dc6cb6cea60bb983314c33386f5f4a7fae5b7efb; fi
+          if [[ ! -f /home/runner/vcl-exp53/vectorclass.h ]]; then
+            rm -rf /home/runner/vcl-exp53
+            git clone -q https://github.com/vectorclass/version2.git /home/runner/vcl-exp53
+            git -C /home/runner/vcl-exp53 checkout -q dc6cb6cea60bb983314c33386f5f4a7fae5b7efb
+          fi
+
       - name: Restore Highway
         if: steps.cpu.outputs.eligible == '1'
         uses: actions/cache/restore@v4
@@ -50,6 +64,7 @@ jobs:
           path: /home/runner/exp53-component-deps
           key: exp53-component-deps-ubuntu24-x86_64-xnn-b9b1cec0-v1
           fail-on-cache-miss: true
+
       - name: Install Intel SDE
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -59,21 +74,33 @@ jobs:
           curl -fsSL -o sde.tar.xz https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
           echo '94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50  sde.tar.xz' | sha256sum -c -
           tar -xf sde.tar.xz
-          SDE="$(find /tmp/sde-kit -maxdepth 2 -type f -name sde64 -print -quit)"; test -x "$SDE"; echo "SDE=$SDE" >> "$GITHUB_ENV"
-          rm -rf /tmp/sde-flops && git clone -q https://github.com/It4innovations/Intel-SDE-FLOPS.git /tmp/sde-flops
+          SDE="$(find /tmp/sde-kit -maxdepth 2 -type f -name sde64 -print -quit)"
+          test -x "$SDE"
+          echo "SDE=$SDE" >> "$GITHUB_ENV"
+
       - name: Build harness
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p /tmp/sdeprof
-          MKLROOT=/opt/intel/oneapi/mkl/latest; ICX=/opt/intel/oneapi/compiler/latest/bin/icx; ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
-          COMMON='-O3 -g -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'; HWY=/home/runner/exp53-component-deps/highway
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          COMMON='-O3 -g -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          HWY=/home/runner/exp53-component-deps/highway
           "$ICPX" -std=c++17 $COMMON -Iproduction -I/home/runner/vcl-exp53 -c production/exp53_vcl_u2z_0100_frozen.cpp -o /tmp/sdeprof/vcl.o
           "$ICX" $COMMON -Iproduction -Dexp53_n2_fused_u4_038_frozen=exp53_n2_fused_u4_038_frozen_ntlocal -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_n2_vmstyle_u4_0381_frozen_ntlocal -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/sdeprof/nt.o
           "$ICPX" -std=c++17 $COMMON -Iproduction -I"$HWY" -I"$MKLROOT/include" bench_exp53_sde_resources.cpp /tmp/sdeprof/vcl.o /tmp/sdeprof/nt.o -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl -o /tmp/sdeprof/bench
           nm -n /tmp/sdeprof/bench | grep -E ' exp53_profile_(start|stop)$'
-          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "HEAD=$(git rev-parse HEAD)"; echo 'SDE_VERSION=10.13.1'; echo 'METHOD=Intel_address_alarm_global_region'; } | tee /tmp/sdeprof/meta.txt
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo 'SDE_VERSION=10.13.1'
+            echo 'METHOD=Intel_SDE_native_mix_address_region'
+            echo 'NOTE=memory_bytes_are_logical_instruction_memory_operands_not_DRAM_traffic'
+          } | tee /tmp/sdeprof/meta.txt
+
       - name: Profile all batches inside address region
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
@@ -84,51 +111,115 @@ jobs:
           set -euo pipefail
           for n in 100 700 3500 15000 50000 1000000 2000000; do
             for stack in ours intel; do
-              d="/tmp/sdeprof/${stack}-${n}"; mkdir -p "$d"
+              d="/tmp/sdeprof/${stack}-${n}"
+              mkdir -p "$d"
               echo "PROFILE stack=$stack n=$n calls=1"
               (
                 cd "$d"
-                "$SDE" -mix -iform -dyn_mask_profile -global_region \
+                "$SDE" -mix -iform -global_region \
                   -control 'start:address:exp53_profile_start,stop:address:exp53_profile_stop' \
                   -omix mix.txt -- /tmp/sdeprof/bench "$stack" "$n" 1 | tee program.txt
-                python3 /tmp/sde-flops/intel_sde_flops.py mix.txt sde-dyn-mask-profile.txt | tee flops.txt || true
                 grep -E '^\*total[[:space:]]+[1-9][0-9]*' mix.txt | tail -1
               )
             done
           done
-      - name: Aggregate address resource table
+
+      - name: Aggregate native SDE resource table
         if: steps.cpu.outputs.eligible == '1'
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY' | tee /tmp/sdeprof/results.txt
-          import pathlib,re
-          root=pathlib.Path('/tmp/sdeprof'); print((root/'meta.txt').read_text(),end='')
-          sizes=[100,700,3500,15000,50000,1000000,2000000]
-          def flops(p):
-              t=p.read_text(errors='replace'); k=t.rfind('Sum:'); t=t[k:] if k>=0 else t
-              def g(label):
-                  m=re.search(re.escape(label)+r'\s*([0-9]+)',t); return int(m.group(1)) if m else None
-              return {'inst':g('Total instructions executed:'),'fma':g('Total FMA instructions executed:'),'dp':g('Double prec. FLOPs:'),'rd':g('Total bytes read:'),'wr':g('Total bytes written:')}
-          def isa(p):
-              t=p.read_text(errors='replace'); totals={'avx512':0,'avx256':0,'avx128':0,'scalar':0}
-              for sec in re.split(r'# EMIT_DYNAMIC_STATS FOR TID',t)[1:]:
-                  end=sec.find('# END_DYNAMIC_STATS'); sec=sec if end<0 else sec[:end]
-                  for key,outkey in [('*avx512','avx512'),('*avx256','avx256'),('*avx128','avx128'),('*scalar-simd','scalar')]:
-                      m=re.search(r'^'+re.escape(key)+r'\s+([0-9]+)\s*$',sec,re.M)
-                      if m: totals[outkey]+=int(m.group(1))
-              return totals
-          print('TABLE_HEADER n stack instructions_per_el bytes_read_per_el bytes_written_per_el bytes_total_per_el avx512_inst_per_el avx256_inst_per_el avx128_inst_per_el scalar_simd_inst_per_el fma_inst_per_el dp_flops_per_el')
+          import pathlib, re
+
+          root = pathlib.Path('/tmp/sdeprof')
+          print((root/'meta.txt').read_text(), end='')
+          sizes = [100,700,3500,15000,50000,1000000,2000000]
+
+          def global_counts(path):
+              text = path.read_text(errors='replace')
+              blocks = re.findall(r'# \$global-dynamic-counts(.*?)# END_GLOBAL_DYNAMIC_STATS', text, re.S)
+              sec = blocks[-1] if blocks else text
+              out = {}
+              for key, val in re.findall(r'^\s*(\S+)\s+([0-9]+)\s*$', sec, re.M):
+                  out[key] = int(val)
+              if out.get('*total', 0) <= 0:
+                  totals = [int(x) for x in re.findall(r'^\*total\s+([0-9]+)\s*$', text, re.M)]
+                  if totals:
+                      out['*total'] = totals[-1]
+              return out
+
+          def sized_mem_bytes(c, kind):
+              total = 0
+              pat = re.compile(r'^\*mem-' + kind + r'-(\d+)$')
+              for key, count in c.items():
+                  m = pat.match(key)
+                  if m:
+                      total += int(m.group(1)) * count
+              return total
+
+          def sized_mem_ops(c, kind):
+              pat = re.compile(r'^\*mem-' + kind + r'-(\d+)$')
+              return sum(count for key, count in c.items() if pat.match(key))
+
+          def fma_count(c):
+              needles = ('FMADD','FMSUB','FNMADD','FNMSUB')
+              return sum(v for k,v in c.items() if not k.startswith('*') and any(x in k for x in needles))
+
+          def branch_count(c):
+              cats = ('*category-CALL','*category-COND_BR','*category-RET','*category-UNCOND_BR',
+                      '*category-SYSCALL','*category-SYSRET')
+              return sum(c.get(k,0) for k in cats)
+
+          def q(x,n):
+              return x/n
+
+          header = (
+              'TABLE_HEADER n stack instructions_per_el avx512_per_el avx256_per_el '
+              'avx128_per_el scalar_simd_per_el vector512_share_pct read_ops_per_el '
+              'write_ops_per_el logical_read_bytes_per_el logical_write_bytes_per_el '
+              'logical_total_bytes_per_el branches_per_el fma_instructions_per_el'
+          )
+          print(header)
+
           for n in sizes:
               for stack in ('ours','intel'):
-                  d=root/f'{stack}-{n}'; f=flops(d/'flops.txt'); a=isa(d/'mix.txt')
-                  if f['inst'] is None or f['inst']<=0: raise SystemExit(f'bad address-region count stack={stack} n={n}: {f}')
-                  q=lambda x:-1.0 if x is None else x/n
-                  print(f'SDE_FINAL n={n} stack={stack} instructions_per_el={q(f["inst"]):.9f} bytes_read_per_el={q(f["rd"]):.9f} bytes_written_per_el={q(f["wr"]):.9f} bytes_total_per_el={q((f["rd"] or 0)+(f["wr"] or 0)):.9f} avx512_inst_per_el={q(a["avx512"]):.9f} avx256_inst_per_el={q(a["avx256"]):.9f} avx128_inst_per_el={q(a["avx128"]):.9f} scalar_simd_inst_per_el={q(a["scalar"]):.9f} fma_inst_per_el={q(f["fma"]):.9f} dp_flops_per_el={q(f["dp"]):.9f}')
+                  c = global_counts(root/f'{stack}-{n}'/'mix.txt')
+                  inst = c.get('*total',0)
+                  if inst <= 0:
+                      raise SystemExit(f'bad SDE count stack={stack} n={n}')
+                  avx512 = c.get('*avx512',0)
+                  avx256 = c.get('*avx256',0)
+                  avx128 = c.get('*avx128',0)
+                  scalar = c.get('*scalar-simd',0)
+                  rdops = sized_mem_ops(c,'read')
+                  wrops = sized_mem_ops(c,'write')
+                  rdbytes = sized_mem_bytes(c,'read')
+                  wrbytes = sized_mem_bytes(c,'write')
+                  branches = branch_count(c)
+                  fma = fma_count(c)
+                  print(
+                      f'SDE_FINAL n={n} stack={stack} '
+                      f'instructions_per_el={q(inst,n):.9f} '
+                      f'avx512_per_el={q(avx512,n):.9f} '
+                      f'avx256_per_el={q(avx256,n):.9f} '
+                      f'avx128_per_el={q(avx128,n):.9f} '
+                      f'scalar_simd_per_el={q(scalar,n):.9f} '
+                      f'vector512_share_pct={100.0*avx512/inst:.6f} '
+                      f'read_ops_per_el={q(rdops,n):.9f} '
+                      f'write_ops_per_el={q(wrops,n):.9f} '
+                      f'logical_read_bytes_per_el={q(rdbytes,n):.9f} '
+                      f'logical_write_bytes_per_el={q(wrbytes,n):.9f} '
+                      f'logical_total_bytes_per_el={q(rdbytes+wrbytes,n):.9f} '
+                      f'branches_per_el={q(branches,n):.9f} '
+                      f'fma_instructions_per_el={q(fma,n):.9f}'
+                  )
           PY
-      - name: Upload
-        if: steps.cpu.outputs.eligible == '1'
+
+      - name: Upload raw SDE and bundle
+        if: always() && steps.cpu.outputs.eligible == '1'
         uses: actions/upload-artifact@v4
         with:
-          name: exp53-sde-address-${{ matrix.shard }}
+          name: exp53-sde-bundle-${{ matrix.shard }}
           path: /tmp/sdeprof
+          if-no-files-found: warn
