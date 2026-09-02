@@ -1,0 +1,142 @@
+name: EXP53 masked-tail compute-efficiency audit
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'exp53_tail_eff_candidate.c'
+      - 'exp53_tail_eff_candidate.hpp'
+      - 'bench_exp53_tail_eff_candidate.cpp'
+      - '.github/workflows/exp53-tail-efficiency-audit.yml'
+
+jobs:
+  bench:
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require exact Xeon
+        id: cpu
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL"
+          if [[ "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then
+            echo eligible=1 >> "$GITHUB_OUTPUT"
+          else
+            echo eligible=0 >> "$GITHUB_OUTPUT"
+            echo SKIP_NON_6973PC
+          fi
+
+      - name: Restore oneAPI
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+
+      - name: Restore VCL
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/vcl-exp53
+          key: exp53-vcl-dc6cb6cea60bb983314c33386f5f4a7fae5b7efb-v1
+
+      - name: Ensure pinned VCL
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f /home/runner/vcl-exp53/vectorclass.h ]]; then
+            rm -rf /home/runner/vcl-exp53
+            git clone -q https://github.com/vectorclass/version2.git /home/runner/vcl-exp53
+            git -C /home/runner/vcl-exp53 checkout -q dc6cb6cea60bb983314c33386f5f4a7fae5b7efb
+          fi
+
+      - name: Restore Highway
+        if: steps.cpu.outputs.eligible == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/exp53-component-deps
+          key: exp53-component-deps-ubuntu24-x86_64-xnn-b9b1cec0-v1
+          fail-on-cache-miss: true
+
+      - name: Build audit candidate
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tail-eff
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICX=/opt/intel/oneapi/compiler/latest/bin/icx
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          COMMON='-O3 -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -qopenmp-simd'
+          HWY=/home/runner/exp53-component-deps/highway
+          "$ICPX" -std=c++17 $COMMON -Iproduction -I/home/runner/vcl-exp53 \
+            -c production/exp53_vcl_u2z_0100_frozen.cpp -o /tmp/tail-eff/vcl.o
+          "$ICX" $COMMON -Iproduction \
+            -Dexp53_n2_fused_u4_038_frozen=exp53_n2_fused_u4_038_frozen_ntlocal \
+            -Dexp53_n2_vmstyle_u4_0381_frozen=exp53_n2_vmstyle_u4_0381_frozen_ntlocal \
+            -c production/exp53_n2_vmstyle_u4_0381_nt_sfence.c -o /tmp/tail-eff/nt.o
+          "$ICX" $COMMON -I. -Iproduction -c exp53_tail_eff_candidate.c -o /tmp/tail-eff/tail.o
+          "$ICPX" -std=c++17 $COMMON -I. -Iproduction -I"$HWY" -I"$MKLROOT/include" \
+            bench_exp53_tail_eff_candidate.cpp /tmp/tail-eff/vcl.o /tmp/tail-eff/nt.o /tmp/tail-eff/tail.o \
+            -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed \
+            -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl \
+            -o /tmp/tail-eff/bench
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "PRODUCTION_TREE=$(git rev-parse HEAD:production)"
+            echo "AUDIT=scalar_remainder_vs_faithful_avx512_masked_tail"
+          } > /tmp/tail-eff/build.txt
+
+      - name: Benchmark production vs candidate
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        env:
+          MKL_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        run: |
+          set -euo pipefail
+          : > /tmp/tail-eff/raw.txt
+          for n in 100 700 3500 15000 50000 1000000 2000000; do
+            taskset -c 0,2 /tmp/tail-eff/bench production "$n" | tee -a /tmp/tail-eff/raw.txt
+            taskset -c 0,2 /tmp/tail-eff/bench candidate "$n" | tee -a /tmp/tail-eff/raw.txt
+          done
+          test "$(grep -c '^RESULT mode=' /tmp/tail-eff/raw.txt)" -eq 14
+
+      - name: Aggregate
+        if: steps.cpu.outputs.eligible == '1'
+        shell: bash
+        run: |
+          cat /tmp/tail-eff/build.txt | tee /tmp/tail-eff/results.txt
+          python3 - <<'PY' | tee -a /tmp/tail-eff/results.txt
+          import re
+          p=re.compile(r'RESULT mode=(production|candidate) n=(\d+) calls=(\d+) wall_ns=([0-9.]+) cpu_ns=([0-9.]+) effective_cores=([0-9.]+) maxrss_kib=(\d+) maxulp=(\d+) remainder=(\d+)')
+          d={}
+          for line in open('/tmp/tail-eff/raw.txt'):
+              m=p.search(line)
+              if m:d[(m.group(1),int(m.group(2)))]=dict(w=float(m.group(4)),c=float(m.group(5)),e=float(m.group(6)),rss=int(m.group(7)),ulp=int(m.group(8)),rem=int(m.group(9)))
+          for n in [100,700,3500,15000,50000,1000000,2000000]:
+              a=d.get(('production',n));b=d.get(('candidate',n))
+              if not a or not b:raise SystemExit(f'missing n={n}')
+              if a['ulp']>2 or b['ulp']>2:raise SystemExit(f'accuracy n={n}')
+              print(f'FINAL n={n} rem={a["rem"]} prod_wall={a["w"]:.9f} cand_wall={b["w"]:.9f} speedup={a["w"]/b["w"]:.6f} '
+                    f'prod_cpu={a["c"]:.9f} cand_cpu={b["c"]:.9f} cpu_eff={a["c"]/b["c"]:.6f} '
+                    f'prod_cores={a["e"]:.6f} cand_cores={b["e"]:.6f} maxulp={max(a["ulp"],b["ulp"])}')
+          PY
+          cat /tmp/tail-eff/raw.txt >> /tmp/tail-eff/results.txt
+          test -z "$(git status --short -- production)"
+
+      - name: Upload audit
+        if: always() && steps.cpu.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-tail-eff-${{ matrix.shard }}
+          path: /tmp/tail-eff
