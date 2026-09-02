@@ -1,0 +1,57 @@
+name: EXP53 Intel PT native-trace probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/exp53-intel-pt-probe.yml'
+
+jobs:
+  probe:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe Intel Processor Trace
+        shell: bash
+        run: |
+          set -u
+          echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "VENDOR=$(lscpu | awk -F: '/Vendor ID/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          grep -m1 '^flags' /proc/cpuinfo || true
+          echo '--- event sources ---'
+          ls -1 /sys/bus/event_source/devices 2>/dev/null | sort || true
+          echo '--- intel_pt sysfs ---'
+          if [[ -d /sys/bus/event_source/devices/intel_pt ]]; then
+            echo INTEL_PT_SYSFS=1
+            find /sys/bus/event_source/devices/intel_pt -maxdepth 2 -type f -print -exec sh -c 'printf "  "; cat "$1" 2>/dev/null || true' _ {} \;
+          else
+            echo INTEL_PT_SYSFS=0
+          fi
+          echo '--- perf list intel_pt ---'
+          perf list 2>&1 | grep -i -A8 -B2 'intel_pt' || true
+          echo '--- permission ---'
+          cat /proc/sys/kernel/perf_event_paranoid || true
+          sudo sysctl -w kernel.perf_event_paranoid=-1 || true
+          cat /proc/sys/kernel/perf_event_paranoid || true
+          echo '--- record test ---'
+          rm -f /tmp/pt.data
+          set +e
+          perf record -e intel_pt// -o /tmp/pt.data -- /bin/true >/tmp/pt.stdout 2>/tmp/pt.stderr
+          rc=$?
+          set -e
+          echo INTEL_PT_RECORD_RC=$rc
+          cat /tmp/pt.stdout || true
+          cat /tmp/pt.stderr || true
+          if [[ $rc -eq 0 && -s /tmp/pt.data ]]; then
+            echo INTEL_PT_AVAILABLE=1
+            ls -l /tmp/pt.data
+            perf report --stdio -i /tmp/pt.data 2>&1 | head -80 || true
+            perf script -i /tmp/pt.data --itrace=i1us 2>&1 | head -80 || true
+          else
+            echo INTEL_PT_AVAILABLE=0
+          fi
