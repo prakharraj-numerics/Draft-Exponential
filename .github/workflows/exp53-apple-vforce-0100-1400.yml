@@ -1,11 +1,11 @@
-name: EXP53 Apple M-series vForce 100-1400
+name: EXP53 Apple M-series vForce 100-1400 plus 3K 10K 60K
 
 on:
   workflow_dispatch:
   push:
     paths:
       - 'bench_exp53_apple_vforce_0100_1400.cpp'
-      - '.github/workflows/exp53-apple-vforce-0100-1400.yml'
+      - '.github/workflows/exp53-apple-vforce-0100-1400 plus 3K 10K 60K.yml'
 
 jobs:
   bench:
@@ -53,8 +53,8 @@ jobs:
           cat /tmp/build.txt | tee /tmp/results.txt
           /tmp/bench_apple_vforce | tee /tmp/raw.txt
           cat /tmp/raw.txt >> /tmp/results.txt
-          test "$(grep -c '^RESULT stack=apple_vforce ' /tmp/raw.txt)" -eq 54
-          grep -q '^CORRECTNESS checked=40500 ' /tmp/raw.txt
+          test "$(grep -c '^RESULT stack=apple_vforce ' /tmp/raw.txt)" -eq 60
+          grep -q '^CORRECTNESS checked=186500 ' /tmp/raw.txt
 
       - name: Summarize
         shell: bash
@@ -67,19 +67,19 @@ jobs:
               match = pattern.match(line.strip())
               if match:
                   rows.append((match.group(1), int(match.group(2)), float(match.group(4))))
-          if len(rows) != 54:
-              raise SystemExit(f'expected 54 timing rows, got {len(rows)}')
+          if len(rows) != 60:
+              raise SystemExit(f'expected 60 timing rows, got {len(rows)}')
           for domain in ('unit', 'mid'):
               values = [ns for dom, n, ns in rows if dom == domain]
               print(f'SUMMARY domain={domain} sizes={len(values)} median_ns={statistics.median(values):.9f} '
                     f'min_ns={min(values):.9f} max_ns={max(values):.9f}')
-          print(f'SUMMARY all_sizes=54 median_ns={statistics.median(ns for _,_,ns in rows):.9f}')
+          print(f'SUMMARY all_sizes=60 median_ns={statistics.median(ns for _,_,ns in rows):.9f}')
           PY
 
       - name: Upload Apple M-series results
         uses: actions/upload-artifact@v4
         with:
-          name: exp53-apple-vforce-100-1400-${{ matrix.shard }}
+          name: exp53-apple-vforce-100-1400 plus 3K 10K 60K-${{ matrix.shard }}
           path: |
             /tmp/build.txt
             /tmp/raw.txt
