@@ -26,7 +26,7 @@ static inline __m512i exp53_full_gather_noinit(__m512i idx) {
 }
 
 extern "C" __attribute__((target("avx512f,avx512dq,fma"),noinline))
-void exp53_attack_asm_gather_loop(double *restrict out,const double *restrict in,size_t n) {
+void exp53_attack_asm_gather_loop(double *__restrict out,const double *__restrict in,size_t n) {
     const __m512d inv=_mm512_set1_pd(N2F_INV128), hi=_mm512_set1_pd(N2F_L128_HI),
       mi=_mm512_set1_pd(N2F_L128_MI), lo=_mm512_set1_pd(N2F_L128_LO),
       magic=_mm512_set1_pd(N2F_MAGIC), one=_mm512_set1_pd(1.0),
