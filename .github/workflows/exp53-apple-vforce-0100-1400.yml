@@ -1,0 +1,86 @@
+name: EXP53 Apple M-series vForce 100-1400
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'bench_exp53_apple_vforce_0100_1400.cpp'
+      - '.github/workflows/exp53-apple-vforce-0100-1400.yml'
+
+jobs:
+  bench:
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1,2,3,4,5,6,7,8]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require Apple silicon
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCH="$(uname -m)"
+          MODEL="$(sysctl -n machdep.cpu.brand_string)"
+          echo "ARCH=$ARCH"
+          echo "CPU_MODEL=$MODEL"
+          [[ "$ARCH" == "arm64" ]]
+          [[ "$MODEL" == Apple* ]]
+          {
+            echo "ARCH=$ARCH"
+            echo "CPU=$MODEL"
+            echo "OS=$(sw_vers -productVersion)"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "SHARD=${{ matrix.shard }}"
+          } > /tmp/build.txt
+
+      - name: Build native Accelerate benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun clang++ -std=c++17 -O3 -mcpu=apple-m1 -DNDEBUG \
+            bench_exp53_apple_vforce_0100_1400.cpp \
+            -framework Accelerate -o /tmp/bench_apple_vforce
+          echo "CLANG=$(xcrun clang++ --version | head -1)" >> /tmp/build.txt
+          otool -L /tmp/bench_apple_vforce | tee -a /tmp/build.txt
+
+      - name: Benchmark Apple vForce
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat /tmp/build.txt | tee /tmp/results.txt
+          /tmp/bench_apple_vforce | tee /tmp/raw.txt
+          cat /tmp/raw.txt >> /tmp/results.txt
+          test "$(grep -c '^RESULT stack=apple_vforce ' /tmp/raw.txt)" -eq 54
+          grep -q '^CORRECTNESS checked=40500 ' /tmp/raw.txt
+
+      - name: Summarize
+        shell: bash
+        run: |
+          python3 - <<'PY' | tee -a /tmp/results.txt
+          import re, statistics
+          rows = []
+          pattern = re.compile(r'^RESULT stack=apple_vforce domain=(unit|mid) n=(\d+) calls=(\d+) ns=([0-9.]+)$')
+          for line in open('/tmp/raw.txt'):
+              match = pattern.match(line.strip())
+              if match:
+                  rows.append((match.group(1), int(match.group(2)), float(match.group(4))))
+          if len(rows) != 54:
+              raise SystemExit(f'expected 54 timing rows, got {len(rows)}')
+          for domain in ('unit', 'mid'):
+              values = [ns for dom, n, ns in rows if dom == domain]
+              print(f'SUMMARY domain={domain} sizes={len(values)} median_ns={statistics.median(values):.9f} '
+                    f'min_ns={min(values):.9f} max_ns={max(values):.9f}')
+          print(f'SUMMARY all_sizes=54 median_ns={statistics.median(ns for _,_,ns in rows):.9f}')
+          PY
+
+      - name: Upload Apple M-series results
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-apple-vforce-100-1400-${{ matrix.shard }}
+          path: |
+            /tmp/build.txt
+            /tmp/raw.txt
+            /tmp/results.txt
