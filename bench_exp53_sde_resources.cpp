@@ -9,10 +9,12 @@
 #include <mkl_vml.h>
 #include "production/exp53_batch_production.hpp"
 
-#ifndef __SSC_MARK
+// Force the exact raw SSC encoding documented by Intel-SDE-FLOPS even under icpx.
+#ifdef __SSC_MARK
+#undef __SSC_MARK
+#endif
 #define __SSC_MARK(tag) \
     __asm__ __volatile__("movl %0, %%ebx; .byte 0x64, 0x67, 0x90 " :: "i"(tag) : "%ebx")
-#endif
 
 struct Aligned {
     double* p = nullptr;
@@ -93,8 +95,6 @@ int main(int argc, char** argv) {
         return 4;
     }
 
-    // Exact documented Intel SDE SSC region. The SDE command broadcasts collection
-    // over the multithreaded region; no full-program baseline subtraction is used.
     __SSC_MARK(0xFACE);
     for (size_t k = 0; k < calls; ++k) invoke();
     __SSC_MARK(0xDEAD);
