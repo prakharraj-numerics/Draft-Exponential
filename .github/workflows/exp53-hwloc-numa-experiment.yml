@@ -58,7 +58,6 @@ jobs:
           fi
           sudo apt-get update -qq
           sudo apt-get install -y -qq libhwloc-dev libnuma-dev numactl
-          hwloc-info --version
           numactl --hardware
 
       - name: Restore Highway
