@@ -1,4 +1,5 @@
 name: EXP53 production vs Intel compute efficiency
+# rerun after formula-only masked-tail production promotion 2026-09-02
 
 on:
   workflow_dispatch:
