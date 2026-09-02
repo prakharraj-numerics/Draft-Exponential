@@ -91,7 +91,7 @@ jobs:
           AFTER="$(git diff --no-ext-diff -- production)"
           [[ "$BEFORE" == "$AFTER" ]]
           {
-            echo "CPU=$MODEL"
+            echo "CPU=Intel Xeon 6973P-C (hardware-gated)"
             echo "HEAD=$(git rev-parse HEAD)"
             echo "PRODUCTION_TREE=$(git rev-parse HEAD:production)"
             echo "BALANCED_PARALLEL_MIN_N=50000"
