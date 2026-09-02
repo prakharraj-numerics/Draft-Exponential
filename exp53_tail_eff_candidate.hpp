@@ -1,10 +1,17 @@
 #pragma once
 /* Isolated executor candidate for compute-efficiency audit.
-   production/ is untouched. Routing is identical to production except:
-   - serial temporal 101..1399 uses the faithful masked-tail candidate;
-   - custom2 helper uses the masked-tail candidate only when its second chunk
-     has a nonzero remainder modulo 32;
-   - Highway 1400..3000 and all full-32 chunks remain production code. */
+   production/ is untouched.
+
+   Selective policy after replicated exact-Xeon audit:
+   - n<=100: unchanged production VCL path.
+   - 101..1399: faithful AVX-512 masked-tail serial path.
+   - 1400..3000: unchanged production Highway path.
+   - 3001..20000 with two workers: production custom2 split mechanics, but the
+     helper's irregular remainder is handled by the faithful masked-tail path.
+   - n>20000: unchanged production custom2 path.
+
+   Thus sizes where the first audit did not replicate a speed/resource win
+   fall directly through to canonical production. */
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +20,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <immintrin.h>
+#include "production/exp53_batch_custom_2core_nt_frozen.hpp"
 #include "production/exp53_highway_sync_1400_3000_frozen.hpp"
 
 extern "C" void exp53_vcl_u2z_0100_frozen(double*, const double*, size_t);
@@ -58,7 +66,6 @@ public:
                            : exp53_n2_vmstyle_u4_0381_frozen;
 
         const uint64_t g = generation_.fetch_add(1, std::memory_order_release) + 1;
-        /* split is always 32-aligned, so caller stays byte-for-byte production math. */
         exp53_n2_vmstyle_u4_0381_frozen(out, in, split);
         while (completed_.load(std::memory_order_acquire) != g) _mm_pause();
     }
@@ -102,12 +109,17 @@ public:
     void run(double *out, const double *in, size_t n, long workers=2) {
         if (n <= 100) {
             exp53_vcl_u2z_0100_frozen(out, in, n);
-        } else if (max_workers_ <= 1 || workers <= 1 || n < 1400) {
+        } else if (max_workers_ <= 1 || workers <= 1) {
+            if (n <= 20000) exp53_n2_vmstyle_u4_0381_masktail_candidate(out, in, n);
+            else exp53_n2_vmstyle_u4_0381_frozen(out, in, n);
+        } else if (n < 1400) {
             exp53_n2_vmstyle_u4_0381_masktail_candidate(out, in, n);
         } else if (n <= 3000) {
             highway().run(out, in, n);
+        } else if (n <= 20000) {
+            tail_custom().run(out, in, n);
         } else {
-            custom().run(out, in, n);
+            production_custom().run(out, in, n);
         }
     }
 
@@ -116,11 +128,16 @@ private:
         if (!highway_) highway_ = std::make_unique<Exp53HighwaySync1400_3000Frozen>();
         return *highway_;
     }
-    Exp53TailEffCustom2Candidate& custom() {
-        if (!custom_) custom_ = std::make_unique<Exp53TailEffCustom2Candidate>();
-        return *custom_;
+    Exp53TailEffCustom2Candidate& tail_custom() {
+        if (!tail_custom_) tail_custom_ = std::make_unique<Exp53TailEffCustom2Candidate>();
+        return *tail_custom_;
+    }
+    Exp53CustomPermanent2CoreFrozen& production_custom() {
+        if (!production_custom_) production_custom_ = std::make_unique<Exp53CustomPermanent2CoreFrozen>();
+        return *production_custom_;
     }
     long max_workers_;
     std::unique_ptr<Exp53HighwaySync1400_3000Frozen> highway_;
-    std::unique_ptr<Exp53TailEffCustom2Candidate> custom_;
+    std::unique_ptr<Exp53TailEffCustom2Candidate> tail_custom_;
+    std::unique_ptr<Exp53CustomPermanent2CoreFrozen> production_custom_;
 };
