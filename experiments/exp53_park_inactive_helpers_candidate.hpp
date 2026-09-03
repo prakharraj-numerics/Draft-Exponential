@@ -1,24 +1,13 @@
 #pragma once
 
-/* EXP53 EXPERIMENT ONLY: park the helper that is not serving the selected route.
+/* EXP53 EXPERIMENT ONLY.
+   Same frozen EXP53 math and routing as production. The only experiment is
+   helper lifecycle: the selected helper keeps the original spin handoff;
+   constructed inactive helpers block on a condition variable.
 
-   Purpose:
-     - preserve the frozen EXP53 mathematical kernels and size routing;
-     - preserve active-helper spin handoff on the hot route;
-     - once both helper families have been constructed, prevent the inactive
-       helper from permanently spin-burning CPU2;
-     - do NOT modify production/frozen files.
-
-   Default/common routing is identical to production:
-     n <= 100       : frozen VCL+u2z
-     100 < n < 1400: frozen serial temporal
-     1400..3000     : frozen Highway synchronized 2-core machinery
-     n > 3000       : frozen custom permanent 2-core machinery
-
-   The only experimental behavior is helper lifecycle:
-     - selected parallel helper = active/spinning exactly for its handoff;
-     - other constructed helper = parked on condition_variable;
-     - serial/VCL route = all constructed helpers parked.
+   Synchronization invariant (v2): payload + generation are published BEFORE
+   waking a parked helper. The worker's `seen` generation is never reset on
+   wake, so a published generation cannot be swallowed during park -> wake.
 */
 
 #define HWY_COMPILE_ONLY_STATIC
@@ -83,8 +72,8 @@ static HWY_INLINE void vec8(double* out, const double* in) {
 static inline void kernel(double* out, const double* in, size_t n) {
     size_t i=0;
     for(; i+32<=n; i+=32) {
-        vec8(out+i,    in+i);
-        vec8(out+i+8,  in+i+8);
+        vec8(out+i, in+i);
+        vec8(out+i+8, in+i+8);
         vec8(out+i+16, in+i+16);
         vec8(out+i+24, in+i+24);
     }
@@ -119,9 +108,8 @@ public:
 
     ~Exp53HighwaySyncParkCandidate() {
         stop_.store(true,std::memory_order_release);
-        active_.store(true,std::memory_order_release);
+        active_.store(false,std::memory_order_release);
         cv_.notify_one();
-        generation_.fetch_add(1,std::memory_order_release);
         if(helper_.joinable()) helper_.join();
     }
 
@@ -138,19 +126,10 @@ public:
         return 42;
     }
 
-    void activate() {
-        if(active_.exchange(true,std::memory_order_acq_rel)) return;
-        cv_.notify_one();
-    }
-
-    void park() {
-        active_.store(false,std::memory_order_release);
-    }
-
+    void park() { active_.store(false,std::memory_order_release); }
     bool active() const { return active_.load(std::memory_order_acquire); }
 
     void run(double* out,const double* in,size_t n) {
-        activate();
         if(n < 1400 || n > 3000) {
             exp53_park_hwy_ns::kernel(out,in,n);
             return;
@@ -172,31 +151,41 @@ public:
         in2_=in+split;
         n2_=n-split;
         const uint64_t g=generation_.fetch_add(1,std::memory_order_release)+1;
+        activate_published();
         exp53_park_hwy_ns::kernel(out,in,split);
         while(completed_.load(std::memory_order_acquire)!=g) _mm_pause();
     }
 
 private:
+    void activate_published() {
+        if(!active_.exchange(true,std::memory_order_acq_rel)) cv_.notify_one();
+    }
+
     void helper_loop() {
         exp53_park_hwy_ns::pin(2);
-        helper_ready_.store(true,std::memory_order_release);
         uint64_t seen=generation_.load(std::memory_order_relaxed);
+        helper_ready_.store(true,std::memory_order_release);
         for(;;) {
+            if(stop_.load(std::memory_order_acquire)) return;
             if(!active_.load(std::memory_order_acquire)) {
                 std::unique_lock<std::mutex> lk(mu_);
-                cv_.wait(lk,[this]{
+                cv_.wait(lk,[this,&seen]{
                     return stop_.load(std::memory_order_acquire) ||
-                           active_.load(std::memory_order_acquire);
+                           (active_.load(std::memory_order_acquire) &&
+                            generation_.load(std::memory_order_acquire)!=seen);
                 });
                 if(stop_.load(std::memory_order_acquire)) return;
-                seen=generation_.load(std::memory_order_relaxed);
             }
 
-            uint64_t g;
+            uint64_t g=seen;
             while(active_.load(std::memory_order_acquire) &&
-                  (g=generation_.load(std::memory_order_acquire))==seen) _mm_pause();
+                  (g=generation_.load(std::memory_order_acquire))==seen) {
+                if(stop_.load(std::memory_order_acquire)) return;
+                _mm_pause();
+            }
             if(stop_.load(std::memory_order_acquire)) return;
             if(!active_.load(std::memory_order_acquire)) continue;
+            if(g==seen) continue;
             seen=g;
             exp53_park_hwy_ns::kernel(out2_,in2_,n2_);
             completed_.store(g,std::memory_order_release);
@@ -230,19 +219,14 @@ public:
 
     ~Exp53Custom2ParkCandidate() {
         stop_.store(true,std::memory_order_release);
-        active_.store(true,std::memory_order_release);
+        active_.store(false,std::memory_order_release);
         cv_.notify_one();
-        generation_.fetch_add(1,std::memory_order_release);
         if(helper_.joinable()) helper_.join();
     }
 
     Exp53Custom2ParkCandidate(const Exp53Custom2ParkCandidate&) = delete;
     Exp53Custom2ParkCandidate& operator=(const Exp53Custom2ParkCandidate&) = delete;
 
-    void activate() {
-        if(active_.exchange(true,std::memory_order_acq_rel)) return;
-        cv_.notify_one();
-    }
     void park() { active_.store(false,std::memory_order_release); }
     bool active() const { return active_.load(std::memory_order_acquire); }
 
@@ -255,30 +239,41 @@ public:
 
 private:
     static void pin_current_thread(int cpu) {
-        cpu_set_t set; CPU_ZERO(&set); CPU_SET(cpu,&set);
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(cpu,&set);
         (void)pthread_setaffinity_np(pthread_self(),sizeof(set),&set);
+    }
+
+    void activate_published() {
+        if(!active_.exchange(true,std::memory_order_acq_rel)) cv_.notify_one();
     }
 
     void helper_loop() {
         pin_current_thread(2);
-        helper_ready_.store(true,std::memory_order_release);
         uint64_t seen=generation_.load(std::memory_order_relaxed);
+        helper_ready_.store(true,std::memory_order_release);
         for(;;) {
+            if(stop_.load(std::memory_order_acquire)) return;
             if(!active_.load(std::memory_order_acquire)) {
                 std::unique_lock<std::mutex> lk(mu_);
-                cv_.wait(lk,[this]{
+                cv_.wait(lk,[this,&seen]{
                     return stop_.load(std::memory_order_acquire) ||
-                           active_.load(std::memory_order_acquire);
+                           (active_.load(std::memory_order_acquire) &&
+                            generation_.load(std::memory_order_acquire)!=seen);
                 });
                 if(stop_.load(std::memory_order_acquire)) return;
-                seen=generation_.load(std::memory_order_relaxed);
             }
 
-            uint64_t g;
+            uint64_t g=seen;
             while(active_.load(std::memory_order_acquire) &&
-                  (g=generation_.load(std::memory_order_acquire))==seen) _mm_pause();
+                  (g=generation_.load(std::memory_order_acquire))==seen) {
+                if(stop_.load(std::memory_order_acquire)) return;
+                _mm_pause();
+            }
             if(stop_.load(std::memory_order_acquire)) return;
             if(!active_.load(std::memory_order_acquire)) continue;
+            if(g==seen) continue;
             seen=g;
             fn_t fn=fn_;
             double* out=out_;
@@ -290,7 +285,6 @@ private:
     }
 
     void run_with(fn_t fn,double* out,const double* in,size_t n) {
-        activate();
         if(!n) return;
         const size_t full32=n/32;
         if(full32<2) { fn(out,in,n); return; }
@@ -298,8 +292,12 @@ private:
         const size_t split=split_blocks*32;
         if(split==0 || split>=n) { fn(out,in,n); return; }
 
-        out_=out+split; in_=in+split; n2_=n-split; fn_=fn;
+        out_=out+split;
+        in_=in+split;
+        n2_=n-split;
+        fn_=fn;
         const uint64_t g=generation_.fetch_add(1,std::memory_order_release)+1;
+        activate_published();
         fn(out,in,split);
         while(completed_.load(std::memory_order_acquire)!=g) _mm_pause();
     }
