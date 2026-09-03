@@ -5,9 +5,13 @@
    helper lifecycle: the selected helper keeps the original spin handoff;
    constructed inactive helpers block on a condition variable.
 
-   Synchronization invariant (v2): payload + generation are published BEFORE
-   waking a parked helper. The worker's `seen` generation is never reset on
-   wake, so a published generation cannot be swallowed during park -> wake.
+   Synchronization invariant (v3):
+     - payload + generation are published BEFORE waking a parked helper;
+     - the worker's `seen` generation is never reset on wake;
+     - park -> wake transitions are serialized with the same mutex used by
+       condition_variable::wait, preventing a lost notification between the
+       predicate check and the thread actually sleeping;
+     - an already-active helper stays on the original mutex-free spin path.
 */
 
 #define HWY_COMPILE_ONLY_STATIC
@@ -107,8 +111,11 @@ public:
     }
 
     ~Exp53HighwaySyncParkCandidate() {
-        stop_.store(true,std::memory_order_release);
-        active_.store(false,std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            stop_.store(true,std::memory_order_release);
+            active_.store(false,std::memory_order_release);
+        }
         cv_.notify_one();
         if(helper_.joinable()) helper_.join();
     }
@@ -158,7 +165,16 @@ public:
 
 private:
     void activate_published() {
-        if(!active_.exchange(true,std::memory_order_acq_rel)) cv_.notify_one();
+        if(active_.load(std::memory_order_acquire)) return;
+        bool notify=false;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if(!active_.load(std::memory_order_relaxed)) {
+                active_.store(true,std::memory_order_release);
+                notify=true;
+            }
+        }
+        if(notify) cv_.notify_one();
     }
 
     void helper_loop() {
@@ -218,8 +234,11 @@ public:
     }
 
     ~Exp53Custom2ParkCandidate() {
-        stop_.store(true,std::memory_order_release);
-        active_.store(false,std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            stop_.store(true,std::memory_order_release);
+            active_.store(false,std::memory_order_release);
+        }
         cv_.notify_one();
         if(helper_.joinable()) helper_.join();
     }
@@ -246,7 +265,16 @@ private:
     }
 
     void activate_published() {
-        if(!active_.exchange(true,std::memory_order_acq_rel)) cv_.notify_one();
+        if(active_.load(std::memory_order_acquire)) return;
+        bool notify=false;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if(!active_.load(std::memory_order_relaxed)) {
+                active_.store(true,std::memory_order_release);
+                notify=true;
+            }
+        }
+        if(notify) cv_.notify_one();
     }
 
     void helper_loop() {
