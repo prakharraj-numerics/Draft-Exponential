@@ -163,6 +163,7 @@ static int run_native(const std::string& stack, size_t n, int domain) {
 
 static int run_sde(const std::string& stack, size_t n, int domain, size_t calls) {
     Aligned in(n), out(n), ref(n);
+    out.p[0] = 0.0;
     fill_domain(in.p, n, domain);
     vmdExp(static_cast<MKL_INT>(n), in.p, ref.p, VML_HA);
 
@@ -187,7 +188,7 @@ static int run_sde(const std::string& stack, size_t n, int domain, size_t calls)
     }
     exp53_diag_profile_stop();
 
-    volatile double sink = out.p[(n*17ULL+calls)%n];
+    volatile double sink = stack == "noop" ? 0.0 : out.p[(n*17ULL+calls)%n];
     std::cout << "SDE_RUN stack=" << stack << " domain=" << (domain?"mid":"unit")
               << " n=" << n << " calls=" << calls
               << " elements=" << static_cast<unsigned long long>(n*calls)
