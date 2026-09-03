@@ -13,6 +13,7 @@
 #include <string>
 #include <sys/resource.h>
 #include <vector>
+#include <mkl.h>
 #include <mkl_vml.h>
 #include "production/exp53_batch_production.hpp"
 
