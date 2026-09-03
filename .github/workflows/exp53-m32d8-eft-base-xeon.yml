@@ -1,0 +1,145 @@
+name: EXP53 m32d8 EFT-base vs Intel Xeon
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'experiments/exp53_m32d8_eft_base_candidates.hpp'
+      - 'experiments/bench_exp53_m32d8_eft_base.cpp'
+      - '.github/workflows/exp53-m32d8-eft-base-xeon.yml'
+
+jobs:
+  benchmark:
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 96
+      matrix:
+        slot: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96]
+    runs-on: ubuntu-24.04
+    env:
+      MKL_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact Intel Xeon 6973P-C + AVX-512
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          VENDOR="$(lscpu | awk -F: '/Vendor ID/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU_MODEL=$MODEL VENDOR=$VENDOR SLOT=${{ matrix.slot }}"
+          if [[ "$VENDOR" == GenuineIntel && "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; fi
+      - name: Install MPFR headers
+        if: steps.gate.outputs.eligible == '1'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libmpfr-dev libgmp-dev curl xz-utils
+      - name: Restore Intel oneAPI
+        if: steps.gate.outputs.eligible == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+          fail-on-cache-miss: true
+      - name: Install Intel SDE
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/eft/sdekit && cd /tmp/eft/sdekit
+          curl -fsSL -o sde.tar.xz https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
+          echo '94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50  sde.tar.xz' | sha256sum -c -
+          tar -xf sde.tar.xz
+          SDE="$(find /tmp/eft/sdekit -maxdepth 2 -type f -name sde64 -print -quit)"
+          echo "SDE=$SDE" >> "$GITHUB_ENV"
+      - name: Build
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/eft/bin
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          COMMON='-O3 -g -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG'
+          "$ICPX" -std=c++17 $COMMON -Iexperiments -I"$MKLROOT/include" experiments/bench_exp53_m32d8_eft_base.cpp -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lmpfr -lgmp -lpthread -lm -ldl -o /tmp/eft/bin/bench
+          {
+            echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+            echo "SLOT=${{ matrix.slot }}"
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "PRODUCTION_BLOB=$(git hash-object production/exp53_batch_production.hpp)"
+            echo "STACKS=rcp14,linrecip,raw,intel"
+            echo "REFERENCE=MPFR256_9600_signed_unit_cases"
+          } | tee /tmp/eft/meta.txt
+      - name: Accuracy
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH="/opt/intel/oneapi/mkl/latest/lib:${LD_LIBRARY_PATH:-}"
+          : > /tmp/eft/accuracy.txt
+          for s in rcp14 linrecip raw intel; do taskset -c 0 /tmp/eft/bin/bench accuracy "$s" | tee -a /tmp/eft/accuracy.txt; done
+      - name: Native wall CPU
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH="/opt/intel/oneapi/mkl/latest/lib:${LD_LIBRARY_PATH:-}"
+          : > /tmp/eft/native.txt
+          for n in 100 700 3500 15000 50000 1000000 2000000; do
+            for d in pos neg; do
+              for s in rcp14 linrecip raw intel; do taskset -c 0 /tmp/eft/bin/bench native "$s" "$n" "$d" | tee -a /tmp/eft/native.txt; done
+            done
+          done
+      - name: SDE instruction and logical memory
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="/opt/intel/oneapi/mkl/latest/lib:${LD_LIBRARY_PATH:-}"
+          calls_for(){ case "$1" in 100)echo 2000;;700)echo 300;;3500)echo 60;;15000)echo 14;;50000)echo 4;;1000000|2000000)echo 1;;esac; }
+          for n in 100 700 3500 15000 50000 1000000 2000000; do c=$(calls_for "$n"); for d in pos neg; do for s in rcp14 linrecip raw intel noop; do dir="/tmp/eft/sde-${d}-${s}-${n}";mkdir -p "$dir";(cd "$dir";taskset -c 0 "$SDE" -mix -iform -global_region -control 'start:address:exp53_eft_profile_start,stop:address:exp53_eft_profile_stop' -omix mix.txt -- /tmp/eft/bin/bench sde "$s" "$n" "$d" "$c" > program.txt);done;done;done
+      - name: Aggregate
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          python3 - <<'PY' | tee /tmp/eft/results.txt
+          import pathlib,re
+          root=pathlib.Path('/tmp/eft');print((root/'meta.txt').read_text(),end='');print((root/'accuracy.txt').read_text(),end='')
+          sizes=[100,700,3500,15000,50000,1000000,2000000];stacks=('rcp14','linrecip','raw','intel');domains=('pos','neg')
+          pn=re.compile(r'EFT_NATIVE stack=(rcp14|linrecip|raw|intel) domain=(pos|neg) n=(\d+) reps=(\d+) wall_ns_el=([0-9.]+) cpu_ns_el=([0-9.]+) maxulp_vs_intel=(\d+)')
+          native={}
+          for line in (root/'native.txt').read_text().splitlines():
+            m=pn.search(line)
+            if m:native[(m.group(1),m.group(2),int(m.group(3)))]=dict(wall=float(m.group(5)),cpu=float(m.group(6)),ulp=int(m.group(7)))
+          def mix(path):
+            text=path.read_text(errors='replace');blocks=re.findall(r'# \$global-dynamic-counts(.*?)# END_GLOBAL_DYNAMIC_STATS',text,re.S);sec=blocks[-1] if blocks else text;vals={k:int(v) for k,v in re.findall(r'^\s*(\S+)\s+([0-9]+)\s*$',sec,re.M)};total=vals.get('*total',0);mem=0
+            for k,v in vals.items():
+              m=re.match(r'^\*mem-(?:read|write)-(\d+)$',k)
+              if m:mem+=int(m.group(1))*v
+            return total,mem
+          calls={100:2000,700:300,3500:60,15000:14,50000:4,1000000:1,2000000:1};sde={}
+          for n in sizes:
+            for d in domains:
+              ni,nb=mix(root/f'sde-{d}-noop-{n}'/'mix.txt')
+              for s in stacks:
+                ii,bb=mix(root/f'sde-{d}-{s}-{n}'/'mix.txt');elems=n*calls[n];sde[(s,d,n)]=dict(inst=max(0,ii-ni)/elems,bytes=max(0,bb-nb)/elems)
+          print('EFT_SUMMARY_HEADER n stack wall_ns_el speed_vs_intel cpu_ns_el cpu_eff_vs_intel instr_el instr_eff_vs_intel logical_bytes_el mem_eff_vs_intel maxulp_vs_intel')
+          for n in sizes:
+            agg={}
+            for s in stacks:
+              a=[native[(s,d,n)] for d in domains];q=[sde[(s,d,n)] for d in domains];agg[s]=dict(wall=sum(x['wall'] for x in a)/2,cpu=sum(x['cpu'] for x in a)/2,ulp=max(x['ulp'] for x in a),inst=sum(x['inst'] for x in q)/2,bytes=sum(x['bytes'] for x in q)/2)
+            I=agg['intel']
+            for s in stacks:
+              a=agg[s];print(f'EFT_SUMMARY n={n} stack={s} wall_ns_el={a["wall"]:.9f} speed_vs_intel={I["wall"]/a["wall"]:.6f} cpu_ns_el={a["cpu"]:.9f} cpu_eff_vs_intel={I["cpu"]/a["cpu"]:.6f} instr_el={a["inst"]:.9f} instr_eff_vs_intel={I["inst"]/a["inst"] if a["inst"] else 0:.6f} logical_bytes_el={a["bytes"]:.9f} mem_eff_vs_intel={I["bytes"]/a["bytes"] if a["bytes"] else 0:.6f} maxulp_vs_intel={a["ulp"]}')
+          PY
+          cat /tmp/eft/native.txt >> /tmp/eft/results.txt
+      - name: Upload
+        if: steps.gate.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-m32d8-eft-base-${{ matrix.slot }}
+          path: |
+            /tmp/eft/meta.txt
+            /tmp/eft/accuracy.txt
+            /tmp/eft/native.txt
+            /tmp/eft/results.txt
+          retention-days: 30
