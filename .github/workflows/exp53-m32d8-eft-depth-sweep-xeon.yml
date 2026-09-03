@@ -1,0 +1,139 @@
+name: EXP53 m32d8 EFT full depth sweep Xeon
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'experiments/exp53_m32d8_eft_depth_sweep.hpp'
+      - 'experiments/bench_exp53_m32d8_eft_depth_sweep.cpp'
+      - '.github/workflows/exp53-m32d8-eft-depth-sweep-xeon.yml'
+
+jobs:
+  benchmark:
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 96
+      matrix:
+        slot: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96]
+    runs-on: ubuntu-24.04
+    env:
+      MKL_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gate exact Xeon
+        id: gate
+        shell: bash
+        run: |
+          MODEL="$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          VENDOR="$(lscpu | awk -F: '/Vendor ID/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"
+          echo "CPU=$MODEL SLOT=${{ matrix.slot }}"
+          if [[ "$VENDOR" == GenuineIntel && "$MODEL" == *"6973P-C"* ]] && grep -m1 '^flags' /proc/cpuinfo | grep -qw avx512f; then echo eligible=1 >> "$GITHUB_OUTPUT"; else echo eligible=0 >> "$GITHUB_OUTPUT"; fi
+      - name: Dependencies
+        if: steps.gate.outputs.eligible == '1'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libmpfr-dev libgmp-dev curl xz-utils
+      - name: Restore oneAPI
+        if: steps.gate.outputs.eligible == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: /opt/intel/oneapi
+          key: intel-oneapi-prof3-intel-2026.1.0-236-2026.1.1-325-v1
+          fail-on-cache-miss: true
+      - name: Install SDE
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          mkdir -p /tmp/depth/sdekit && cd /tmp/depth/sdekit
+          curl -fsSL -o sde.tar.xz https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
+          echo '94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50  sde.tar.xz' | sha256sum -c -
+          tar -xf sde.tar.xz
+          echo "SDE=$(find . -maxdepth 2 -type f -name sde64 -print -quit)" >> "$GITHUB_ENV"
+      - name: Build
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          mkdir -p /tmp/depth/bin
+          MKLROOT=/opt/intel/oneapi/mkl/latest
+          ICPX=/opt/intel/oneapi/compiler/latest/bin/icpx
+          "$ICPX" -std=c++17 -O3 -g -xHost -qopt-zmm-usage=high -fp-model=precise -fno-math-errno -DNDEBUG -Iexperiments -I"$MKLROOT/include" experiments/bench_exp53_m32d8_eft_depth_sweep.cpp -L"$MKLROOT/lib" -Wl,-rpath,"$MKLROOT/lib" -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lmpfr -lgmp -lpthread -lm -ldl -o /tmp/depth/bin/bench
+          { echo "CPU=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2);print $2;exit}')"; echo "SLOT=${{ matrix.slot }}"; echo "HEAD=$(git rev-parse HEAD)"; echo "PRODUCTION_BLOB=$(git hash-object production/exp53_batch_production.hpp)"; } > /tmp/depth/meta.txt
+      - name: Accuracy all depths
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH="/opt/intel/oneapi/mkl/latest/lib:${LD_LIBRARY_PATH:-}"
+          : > /tmp/depth/accuracy.txt
+          for s in d0 d1 d2 d3 d4 d5 raw intel; do taskset -c 0 /tmp/depth/bin/bench accuracy "$s" | tee -a /tmp/depth/accuracy.txt; done
+      - name: Native all depths all sizes
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH="/opt/intel/oneapi/mkl/latest/lib:${LD_LIBRARY_PATH:-}"
+          : > /tmp/depth/native.txt
+          for n in 100 700 3500 15000 50000 1000000 2000000; do
+            for d in pos neg; do
+              for s in d0 d1 d2 d3 d4 d5 raw intel; do taskset -c 0 /tmp/depth/bin/bench native "$s" "$n" "$d" | tee -a /tmp/depth/native.txt; done
+            done
+          done
+      - name: SDE instruction sweep at 15K
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="/opt/intel/oneapi/mkl/latest/lib:${LD_LIBRARY_PATH:-}"
+          : > /tmp/depth/sde_summary.txt
+          for s in d0 d1 d2 d3 d4 d5 raw intel noop; do
+            dir="/tmp/depth/sde-$s"; mkdir -p "$dir"
+            (cd "$dir"; taskset -c 0 "/tmp/depth/sdekit/$SDE" -mix -iform -global_region -control 'start:address:exp53_depth_profile_start,stop:address:exp53_depth_profile_stop' -omix mix.txt -- /tmp/depth/bin/bench sde "$s" 15000 pos 14 >/dev/null)
+          done
+          python3 - <<'PY' | tee /tmp/depth/sde_summary.txt
+          import pathlib,re
+          root=pathlib.Path('/tmp/depth')
+          def read(s):
+            t=(root/f'sde-{s}'/'mix.txt').read_text(errors='replace')
+            b=re.findall(r'# \$global-dynamic-counts(.*?)# END_GLOBAL_DYNAMIC_STATS',t,re.S)
+            sec=b[-1] if b else t
+            v={k:int(n) for k,n in re.findall(r'^\s*(\S+)\s+([0-9]+)\s*$',sec,re.M)}
+            total=v.get('*total',0); mem=0
+            for k,n in v.items():
+              m=re.match(r'^\*mem-(?:read|write)-(\d+)$',k)
+              if m: mem += int(m.group(1))*n
+            return total,mem
+          ni,nb=read('noop'); elems=15000*14
+          for s in ('d0','d1','d2','d3','d4','d5','raw','intel'):
+            i,b=read(s); print(f'DEPTH_SDE_SUMMARY stack={s} instr_el={(i-ni)/elems:.9f} logical_bytes_el={(b-nb)/elems:.9f}')
+          PY
+      - name: Build compact summary
+        if: steps.gate.outputs.eligible == '1'
+        shell: bash
+        run: |
+          python3 - <<'PY' | tee /tmp/depth/results.txt
+          import re,pathlib
+          r=pathlib.Path('/tmp/depth')
+          print((r/'meta.txt').read_text(),end=''); print((r/'accuracy.txt').read_text(),end=''); print((r/'sde_summary.txt').read_text(),end='')
+          pat=re.compile(r'DEPTH_NATIVE stack=(\w+) domain=(pos|neg) n=(\d+) wall_ns_el=([0-9.]+) cpu_ns_el=([0-9.]+)')
+          z={}
+          for line in (r/'native.txt').read_text().splitlines():
+            m=pat.search(line)
+            if m:z[(m.group(1),m.group(2),int(m.group(3)))]=(float(m.group(4)),float(m.group(5)))
+          stacks=('d0','d1','d2','d3','d4','d5','raw','intel')
+          for n in (100,700,3500,15000,50000,1000000,2000000):
+            a={s:((z[(s,'pos',n)][0]+z[(s,'neg',n)][0])/2,(z[(s,'pos',n)][1]+z[(s,'neg',n)][1])/2) for s in stacks}
+            iw,ic=a['intel']
+            for s in stacks:
+              w,c=a[s]; print(f'DEPTH_SUMMARY n={n} stack={s} wall_ns_el={w:.9f} speed_vs_intel={iw/w:.6f} cpu_ns_el={c:.9f} cpu_eff_vs_intel={ic/c:.6f}')
+          PY
+      - name: Upload
+        if: steps.gate.outputs.eligible == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: exp53-m32d8-eft-depth-${{ matrix.slot }}
+          path: |
+            /tmp/depth/meta.txt
+            /tmp/depth/accuracy.txt
+            /tmp/depth/native.txt
+            /tmp/depth/sde_summary.txt
+            /tmp/depth/results.txt
+          retention-days: 30
